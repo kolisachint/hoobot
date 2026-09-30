@@ -1,0 +1,1181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hoobot architecture design (revision 2)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+/*
+  Plan
+  Color (Solarized Light, inks darkened for contrast; single light theme by choice):
+    ground  #fdf6e3   page
+    panel   #f3ecd6   cards, table heads
+    ink     #073642   body text (~12:1 on ground)
+    muted   #34525c   secondary text (~7:1)
+    accent  #1a5a88   links, focus, headings rule
+    rule    #d3cab0   dividers
+    status: decided #3f4d00 · open #9a340c · superseded #4c4f6e (always with a text label + symbol)
+  Type:
+    text  Atkinson Hyperlegible, fallback system-ui stack (designed for low vision)
+    mono  MesloLGS NF (user's terminal font), fallback ui-monospace stack
+  Layout: one ~68ch reading column; sticky contents rail on wide screens.
+*/
+:root {
+  color-scheme: light;
+  --ground: #fdf6e3;
+  --panel: #f3ecd6;
+  --panel-strong: #eae1c6;
+  --ink: #073642;
+  --muted: #34525c;
+  --accent: #1a5a88;
+  --accent-soft: #dfe9ec;
+  --rule: #d3cab0;
+  --ok: #3f4d00;
+  --ok-bg: #eef0d2;
+  --open: #9a340c;
+  --open-bg: #f8e3d4;
+  --old: #4c4f6e;
+  --old-bg: #e7e5ec;
+  --text: "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  --mono: "MesloLGS NF", "MesloLGS Nerd Font", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --size: 19px;
+  --measure: 68ch;
+}
+html[data-size="l"]  { --size: 22px; }
+html[data-size="xl"] { --size: 25px; }
+
+* { box-sizing: border-box; }
+html { font-size: var(--size); scroll-padding-top: 1.5rem; }
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--text);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-underline-offset: 0.18em; text-decoration-thickness: 0.08em; }
+a:hover { text-decoration-thickness: 0.14em; }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+
+h1, h2, h3 { line-height: 1.25; text-wrap: balance; color: var(--ink); }
+h1 { font-size: 2.1rem; margin: 0; }
+h2 { font-size: 1.55rem; margin: 0; }
+h3 { font-size: 1.15rem; margin: 1.6rem 0 0.4rem; }
+p, li { max-width: var(--measure); }
+p { margin: 0.6rem 0; }
+ul, ol { padding-left: 1.3rem; margin: 0.5rem 0; }
+li + li { margin-top: 0.3rem; }
+strong { font-weight: 700; }
+code {
+  font-family: var(--mono);
+  font-size: 0.84em;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 0.05em 0.3em;
+}
+
+/* ── Shell ─────────────────────────────────────────── */
+.shell {
+  display: grid;
+  grid-template-columns: 15rem minmax(0, 1fr);
+  gap: 3rem;
+  max-width: 78rem;
+  margin: 0 auto;
+  padding: 2.5rem 2rem 5rem;
+}
+@media (max-width: 60rem) {
+  .shell { grid-template-columns: 1fr; gap: 1.5rem; padding: 1.5rem 1.1rem 4rem; }
+  .rail { position: static !important; max-height: none !important; }
+}
+
+.rail {
+  position: sticky;
+  top: 1.5rem;
+  align-self: start;
+  max-height: calc(100vh - 3rem);
+  overflow-y: auto;
+  display: grid;
+  gap: 1.2rem;
+  font-size: 0.86rem;
+}
+.rail nav ol { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.15rem; }
+.rail nav li { max-width: none; margin: 0; }
+.rail nav a {
+  display: grid;
+  grid-template-columns: 2.1rem 1fr;
+  gap: 0.3rem;
+  padding: 0.3rem 0.5rem;
+  border-radius: 5px;
+  color: var(--ink);
+  text-decoration: none;
+}
+.rail nav a:hover { background: var(--panel); }
+.rail nav a.here { background: var(--accent-soft); font-weight: 700; }
+.rail nav .n { font-family: var(--mono); color: var(--muted); font-size: 0.85em; padding-top: 0.12em; }
+
+.label {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.sizer { display: grid; gap: 0.4rem; }
+.sizer .btns { display: flex; gap: 0.35rem; }
+.sizer button {
+  font: inherit;
+  font-family: var(--text);
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  padding: 0.25rem 0.6rem;
+  cursor: pointer;
+}
+.sizer button[aria-pressed="true"] { background: var(--ink); color: var(--ground); border-color: var(--ink); }
+
+.progress { display: grid; gap: 0.35rem; }
+.bar { height: 0.55rem; background: var(--panel-strong); border-radius: 99px; overflow: hidden; }
+.bar > span { display: block; height: 100%; width: 0; background: var(--ok); transition: width 0.25s; }
+@media (prefers-reduced-motion: reduce) { .bar > span { transition: none; } }
+
+main { display: grid; gap: 3.2rem; min-width: 0; }
+
+/* ── Header ────────────────────────────────────────── */
+header.top { display: grid; gap: 0.9rem; padding-bottom: 1.8rem; border-bottom: 2px solid var(--ink); }
+.meta { display: flex; flex-wrap: wrap; gap: 0.6rem 1.4rem; align-items: center; color: var(--muted); font-size: 0.9rem; }
+.lede { font-size: 1.12rem; }
+
+/* ── Status pills: text + symbol, never color alone ─ */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.2em 0.6em;
+  border-radius: 4px;
+  border: 1.5px solid currentColor;
+  white-space: nowrap;
+  vertical-align: 0.15em;
+}
+.pill.ok   { color: var(--ok);   background: var(--ok-bg); }
+.pill.open { color: var(--open); background: var(--open-bg); }
+.pill.old  { color: var(--old);  background: var(--old-bg); }
+.pill.ok::before   { content: "✓"; }
+.pill.open::before { content: "?"; }
+.pill.old::before  { content: "↷"; }
+
+/* ── Sections ──────────────────────────────────────── */
+section.topic { display: grid; gap: 0.2rem; }
+.topic-head {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  gap: 0.2rem 0.9rem;
+  align-items: baseline;
+  padding-bottom: 0.7rem;
+  border-bottom: 1px solid var(--rule);
+  margin-bottom: 0.5rem;
+}
+.topic-head .num { font-family: var(--mono); font-size: 1rem; color: var(--accent); font-weight: 700; }
+.topic-head .src { grid-column: 2 / -1; font-size: 0.82rem; color: var(--muted); }
+.topic-head .src code { font-size: 0.9em; }
+
+.review {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.review input { width: 1.15rem; height: 1.15rem; accent-color: var(--ok); cursor: pointer; }
+.review:has(input:checked) { color: var(--ok); font-weight: 700; }
+
+/* Numbered decision list */
+ol.decisions { list-style: none; padding: 0; margin: 0.6rem 0; counter-reset: d; display: grid; gap: 0.7rem; }
+ol.decisions > li {
+  counter-increment: d;
+  display: grid;
+  grid-template-columns: 2rem 1fr;
+  gap: 0.5rem;
+  max-width: calc(var(--measure) + 2.5rem);
+}
+ol.decisions > li::before {
+  content: counter(d);
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: var(--ground);
+  background: var(--ink);
+  border-radius: 4px;
+  height: 1.55rem;
+  display: grid;
+  place-items: center;
+  margin-top: 0.1rem;
+}
+ol.decisions > li > div > p:first-child { margin-top: 0; }
+
+.callout {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 0.9rem 1.1rem;
+  max-width: calc(var(--measure) + 2.5rem);
+}
+.callout > :first-child { margin-top: 0; }
+.callout > :last-child { margin-bottom: 0; }
+.callout.warn { background: var(--open-bg); border-color: #e5bfa6; }
+.callout .label { display: block; margin-bottom: 0.3rem; }
+.callout.warn .label { color: var(--open); }
+
+/* Tables */
+.scroll { overflow-x: auto; margin: 0.8rem 0; border: 1px solid var(--rule); border-radius: 8px; background: #fffaf0; }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+th, td { text-align: left; vertical-align: top; padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--rule); }
+tr:last-child td { border-bottom: 0; }
+th { background: var(--panel); font-weight: 700; white-space: nowrap; }
+td.date, td.num { font-variant-numeric: tabular-nums; white-space: nowrap; font-family: var(--mono); font-size: 0.85em; }
+tbody tr:hover td { background: #faf2dc; }
+
+/* Code / sketches */
+pre {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  background: #fffaf0;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 0.9rem 1.1rem;
+  overflow-x: auto;
+  margin: 0.8rem 0;
+  max-width: 100%;
+}
+pre code { background: none; border: 0; padding: 0; font-size: 1em; }
+.cm { color: #5e6f73; }
+
+/* ── Architecture diagram (HTML, readable by screen readers) ── */
+figure.arch { margin: 1rem 0; }
+.arch-grid {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1.1fr) auto minmax(11rem, 1fr) auto minmax(12rem, 1.1fr);
+  gap: 0.8rem;
+  align-items: center;
+  overflow-x: auto;
+  padding: 1.1rem;
+  background: #fffaf0;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+}
+@media (max-width: 52rem) {
+  .arch-grid { grid-template-columns: 1fr; }
+  .arch-grid .arrow { transform: rotate(90deg); justify-self: center; }
+}
+.col { display: grid; gap: 0.5rem; }
+.col > .label { margin-bottom: 0.1rem; }
+.node {
+  border: 1.5px solid var(--ink);
+  border-radius: 6px;
+  padding: 0.45rem 0.7rem;
+  background: var(--ground);
+  font-size: 0.88rem;
+  line-height: 1.35;
+}
+.node small { display: block; color: var(--muted); font-size: 0.8em; }
+.node.later { border-style: dashed; }
+.node.hub { background: var(--ink); color: var(--ground); border-color: var(--ink); padding: 1rem; }
+.node.hub strong { font-family: var(--mono); font-size: 1.05rem; }
+.node.hub small { color: #c9d6d6; }
+.node.hub ul { margin: 0.5rem 0 0; padding-left: 1.1rem; font-size: 0.85em; }
+.arrow { font-family: var(--mono); color: var(--muted); font-size: 0.78rem; text-align: center; line-height: 1.3; }
+.arrow b { display: block; font-size: 1.4rem; color: var(--ink); }
+figcaption { font-size: 0.85rem; color: var(--muted); margin-top: 0.5rem; max-width: var(--measure); }
+
+/* Phases */
+ol.phases { list-style: none; padding: 0; margin: 0.8rem 0; display: grid; gap: 0.8rem; }
+ol.phases > li {
+  display: grid;
+  grid-template-columns: 5.2rem 1fr;
+  gap: 1rem;
+  max-width: none;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 0.9rem 1.1rem;
+}
+ol.phases .ph { font-family: var(--mono); font-weight: 700; color: var(--accent); font-size: 0.85rem; }
+ol.phases h3 { margin: 0 0 0.3rem; font-size: 1.05rem; }
+ol.phases ul { margin: 0; }
+ol.phases .where { font-size: 0.82rem; color: var(--muted); }
+
+/* Flow steps */
+ol.flow { list-style: none; padding: 0; margin: 0.8rem 0; display: grid; gap: 0.45rem; counter-reset: f; }
+ol.flow li {
+  counter-increment: f;
+  display: grid;
+  grid-template-columns: 1.8rem 1fr;
+  gap: 0.6rem;
+  align-items: start;
+}
+ol.flow li::before {
+  content: counter(f);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  font-weight: 700;
+  border: 1.5px solid var(--ink);
+  border-radius: 50%;
+  width: 1.55rem; height: 1.55rem;
+  display: grid; place-items: center;
+}
+
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 0.9rem; margin: 0.8rem 0; }
+.two .callout { max-width: none; }
+
+
+/* Revision 2 additions */
+.pill.new { color: var(--accent); background: var(--accent-soft); }
+.pill.new::before { content: "★"; }
+.hint { color: var(--muted); font-size: 0.9rem; }
+.note { font-size: 0.8rem; color: var(--muted); margin: 0.2rem 0 0; }
+.node.group { background: var(--panel); display: grid; gap: 0.1rem; }
+.node.group > strong { font-family: var(--mono); }
+.node.group .sub { display: grid; gap: 0.35rem; margin-top: 0.45rem; }
+.node.group .sub .node { font-size: 0.82rem; padding: 0.3rem 0.55rem; }
+table.roles td.own { font-weight: 700; color: var(--ok); white-space: nowrap; }
+
+footer { border-top: 1px solid var(--rule); padding-top: 1.2rem; color: var(--muted); font-size: 0.85rem; }
+
+@media print {
+  .rail, .review { display: none; }
+  .shell { grid-template-columns: 1fr; padding: 0; }
+  section.topic { break-inside: avoid-page; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+
+<aside class="rail" aria-label="Page tools">
+  <div>
+    <span class="label">Contents</span>
+    <nav aria-label="Contents">
+      <ol>
+        <li><a href="#summary"><span class="n">—</span><span>Summary</span></a></li>
+        <li><a href="#review"><span class="n">17</span><span>Architecture review</span></a></li>
+        <li><a href="#changed"><span class="n">Δ</span><span>What changed</span></a></li>
+        <li><a href="#picture"><span class="n">—</span><span>The big picture</span></a></li>
+        <li><a href="#roles"><span class="n">16</span><span>Roles: hoocode vs hoobot</span></a></li>
+        <li><a href="#today"><span class="n">00</span><span>Where we are today</span></a></li>
+        <li><a href="#protocol"><span class="n">12</span><span>Protocol + server</span></a></li>
+        <li><a href="#bot"><span class="n">10</span><span>What a bot is</span></a></li>
+        <li><a href="#sessions"><span class="n">13</span><span>Sessions + workspaces</span></a></li>
+        <li><a href="#safety"><span class="n">14</span><span>Users + safety</span></a></li>
+        <li><a href="#desktop"><span class="n">11</span><span>UIs + registry</span></a></li>
+        <li><a href="#roadmap"><span class="n">15</span><span>Scope + roadmap</span></a></li>
+        <li><a href="#surfaces"><span class="n">03</span><span>All surfaces</span></a></li>
+        <li><a href="#risks"><span class="n">!</span><span>Things to check</span></a></li>
+        <li><a href="#open"><span class="n">?</span><span>Still open</span></a></li>
+        <li><a href="#log"><span class="n">≡</span><span>Decision log</span></a></li>
+      </ol>
+    </nav>
+  </div>
+
+  <div class="sizer">
+    <span class="label" id="size-label">Text size</span>
+    <div class="btns" role="group" aria-labelledby="size-label">
+      <button type="button" data-size="m">A</button>
+      <button type="button" data-size="l" style="font-size:1.12em">A</button>
+      <button type="button" data-size="xl" style="font-size:1.25em">A</button>
+    </div>
+  </div>
+
+  <div class="progress">
+    <span class="label">Your review</span>
+    <div class="bar" aria-hidden="true"><span id="bar"></span></div>
+    <span id="progress-text">0 of 8 topics reviewed</span>
+  </div>
+</aside>
+
+<main>
+
+<header class="top" id="summary">
+  <span class="label">hoobot · design review · revision 3</span>
+  <h1>hoobot architecture</h1>
+  <div class="meta">
+    <span class="pill ok">Architecture locked: B+</span>
+    <span class="pill new">Revised</span>
+    <span>Not started · no code changed</span>
+    <span>30 Sep 2026</span>
+  </div>
+  <p class="lede">
+    <strong>hoocode is the engine and the server. hoobot is bots and surfaces.</strong>
+  </p>
+  <ul>
+    <li><strong>hoocode</strong> gains <code>hoocode app-server</code>, a long-running server that speaks the Codex app-server protocol. It handles threads, approvals, profiles, safety rules and worker processes.</li>
+    <li><strong>hoobot</strong> is one client process. It runs the Discord, Slack and GitHub adapters, routes messages to bots, links your accounts, and manages bot installs.</li>
+    <li><strong>A bot</strong> is a hoocode profile plus hoobot routing.</li>
+    <li><strong>The same safety rules</strong> apply to every client: hoobot, the Codex CLI, or a web UI. Policy lives in hoocode's core, so the terminal UI is covered too.</li>
+  </ul>
+  <p class="hint">
+    Tick <em>Reviewed</em> on each topic as you go. Your ticks and text size are saved in this browser.
+  </p>
+</header>
+
+<!-- ── 17 Architecture review ── -->
+<section class="topic" id="review" aria-labelledby="h-review" data-review="review">
+  <div class="topic-head">
+    <span class="num">17</span>
+    <h2 id="h-review">Architecture review: why B+</h2>
+    <span class="pill ok">Locked</span>
+    <span class="src"><code>17-architecture-review.md</code> · R15–R18</span>
+  </div>
+
+  <h3>The options</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>#</th><th>Option</th><th>In short</th><th>Verdict</th></tr></thead>
+    <tbody>
+      <tr><td class="num">A</td><td>Hub in hoobot (first design)</td><td><code>hoobotd</code> owns threads and safety</td><td>✖ Safety gap; protocol spoken twice</td></tr>
+      <tr><td class="num">A′</td><td>Thin hub in hoobot</td><td>Engine, policy and stdio app-server in hoocode; daemon in hoobot</td><td>△ Sound: the fallback</td></tr>
+      <tr><td class="num">B</td><td><strong>hoocode is the server</strong></td><td>hoocode serves the Codex protocol; hoobot is a client</td><td>✔ <strong>Chosen, as B+</strong></td></tr>
+      <tr><td class="num">C</td><td>Library</td><td>hoobot loads <code>AgentSession</code> directly</td><td>✖ No isolation, no Codex clients</td></tr>
+      <tr><td class="num">D</td><td>Real Codex as the engine</td><td>hoobot talks to <code>codex app-server</code></td><td>△ Drops hoocode; kept as a <strong>test target</strong></td></tr>
+      <tr><td class="num">E</td><td>Status quo plus</td><td><code>--mode rpc</code> per thread, add Slack</td><td>✖ Stopgap only</td></tr>
+      <tr><td class="num">F</td><td>ACP</td><td>Editor protocol</td><td>✖ One client, no fan-out</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>A vs B</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>Question</th><th>A: hub in hoobot</th><th>B: hoocode is the server</th></tr></thead>
+    <tbody>
+      <tr><td>Size of hoocode</td><td>✔ small</td><td>✖ grows a lot</td></tr>
+      <tr><td>Following pi-mono upstream</td><td>✔ easier</td><td>✖ harder (<strong>doesn't matter: rarely merged</strong>)</td></tr>
+      <tr><td>Changing hoobot quickly</td><td>✔ one repo</td><td>➖ both repos (<strong>fine: you own both</strong>)</td></tr>
+      <tr><td>Safety covers the terminal UI and Codex CLI</td><td>✖</td><td>✔</td></tr>
+      <tr><td>Codex CLI or IDE works with no hoobot running</td><td>✖</td><td>✔ (<strong>you want this</strong>)</td></tr>
+      <tr><td>Terminal UI shares a thread with a bot</td><td>✖</td><td>✔ (<strong>you want this, eventually</strong>)</td></tr>
+      <tr><td>Where the protocol is spoken</td><td>✖ twice</td><td>✔ once</td></tr>
+      <tr><td>Same shape as Codex</td><td>✖</td><td>✔</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="callout">
+    <span class="label">What decided it</span>
+    <p>With policy in hoocode's core and a stdio app-server, A′ and B differ in only <strong>where the daemon lives</strong>. You want hoocode's server usable without hoobot, and the terminal UI sharing threads with bots, so the daemon belongs in hoocode.</p>
+  </div>
+
+  <h3>B+: the three changes</h3>
+  <ol class="decisions">
+    <li><div><p><strong>R15: policy lives in hoocode's core</strong>, not the server. Grants, always-allow rules and the folder allowlist apply to the terminal UI, rpc, print and the app-server.</p></div></li>
+    <li><div><p><strong>R16: hoocode has four layers.</strong> Each can be tested on its own. The daemon only relays and supervises, because each worker is an L3 process.</p></div></li>
+    <li><div><p><strong>R17: hoobot sticks to the standard Codex protocol</strong>, plus an optional profile id. It is tested against the real <code>codex app-server</code> too.</p></div></li>
+  </ol>
+  <p><strong>Later (R18):</strong> the hoocode terminal UI becomes a daemon client, so it can open a bot's thread live.</p>
+
+  <pre><code>L4  daemon      socket + WS · fan-out · approval routing · supervisor
+L3  app-server  Codex protocol over stdio · one client
+L2  policy core profiles · grants · always-allow · workspace allowlist
+L1  engine      AgentSession, tools, sessions   <span class="cm">(exists today)</span></code></pre>
+
+  <ul>
+    <li><strong>Why separate worker processes:</strong> hoocode falls back to <code>process.cwd()</code> in about 14 places in core. Running several folders in one process would be risky.</li>
+    <li><strong>Daemon crash:</strong> launchd restarts it and threads resume from JSONL. A running turn is lost and shows as interrupted.</li>
+    <li><strong>If B is too heavy:</strong> fall back to A′ by moving L4 into hoobot. The Codex protocol is on both sides, so the move is cheap.</li>
+  </ul>
+</section>
+
+<!-- ── What changed ────────────────────────────── -->
+<section class="topic" id="changed" aria-labelledby="h-changed">
+  <div class="topic-head">
+    <span class="num">Δ</span>
+    <h2 id="h-changed">What changed in this revision</h2>
+    <span class="pill new">Revised</span>
+    <span class="src">Rethink R1–R14 · <code>16-roles.md</code></span>
+  </div>
+
+  <div class="scroll"><table>
+    <thead><tr><th>Before</th><th>Now</th></tr></thead>
+    <tbody>
+      <tr><td>A hub, <code>hoobotd</code>, sits between clients and hoocode</td><td><strong>No hub.</strong> <code>hoocode app-server</code> is the server</td></tr>
+      <tr><td>The hub owns threads, fan-out and approvals</td><td><strong>hoocode</strong> owns them, as <code>codex app-server</code> does</td></tr>
+      <tr><td>The hub enforces grants and always-allow rules</td><td><strong>hoocode</strong> enforces them, so every client is covered</td></tr>
+      <tr><td>The bot's persona is kept under the <code>hoobot</code> key</td><td>The persona is a <strong>hoocode profile</strong>; <code>hoobot</code> keeps only routing</td></tr>
+      <tr><td><code>hoobot/*</code> extension methods</td><td>Only <code>hoocode/*</code> methods; hoobot adds none</td></tr>
+      <tr><td>A custom dialog method</td><td>Codex's <code>item/tool/requestUserInput</code></td></tr>
+      <tr><td>One web UI, served by the hub</td><td>Split: a <strong>hoocode</strong> UI for threads and a <strong>hoobot</strong> UI for bots</td></tr>
+      <tr><td>Reuse pi-codex-app-server?</td><td>Copy the <strong>protocol</strong> from <code>../codex</code>, pinned; write the server in TS</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="callout">
+    <span class="label">The rule behind it</span>
+    <p>If a feature would help a Codex CLI user who has no hoobot installed, it belongs in hoocode.</p>
+  </div>
+</section>
+
+<!-- ── Big picture ─────────────────────────────── -->
+<section class="topic" id="picture" aria-labelledby="h-picture">
+  <div class="topic-head">
+    <span class="num">—</span>
+    <h2 id="h-picture">The big picture</h2>
+    <span></span>
+  </div>
+
+  <figure class="arch">
+    <div class="arch-grid">
+      <div class="col" aria-label="Clients">
+        <span class="label">Clients</span>
+        <div class="node group">
+          <strong>hoobot</strong><small>one process · this repo</small>
+          <div class="sub">
+            <div class="node">Discord adapter<small>exists, will be ported</small></div>
+            <div class="node later">Slack adapter</div>
+            <div class="node later">GitHub adapter</div>
+            <div class="node later">Bot manager UI</div>
+          </div>
+        </div>
+        <div class="node later">hoocode web UI<small>threads + approvals</small></div>
+        <div class="node later">Swift menu-bar app</div>
+        <div class="node">Codex CLI / IDE<small>stock clients</small></div>
+      </div>
+
+      <div class="arrow" aria-hidden="true"><b>⇄</b>Codex<br>protocol<br><br>unix socket<br>0600<br>+ ws://<br>127.0.0.1</div>
+
+      <div class="node hub">
+        <strong>hoocode app-server</strong>
+        <small>the server · hoocode repo</small>
+        <ul>
+          <li>threads + sessions</li>
+          <li>fan-out to all clients</li>
+          <li>approvals</li>
+          <li>profiles</li>
+          <li>grants + rules</li>
+          <li>workspace allowlist</li>
+        </ul>
+      </div>
+
+      <div class="arrow" aria-hidden="true"><b>⇄</b>internal</div>
+
+      <div class="col" aria-label="Workers">
+        <span class="label">Workers</span>
+        <div class="node later">reviewer @ ~/github/hoobot<small>threads t1, t4</small></div>
+        <div class="node later">reviewer @ ~/github/other<small>thread t2</small></div>
+        <div class="node later">helper @ its own folder<small>thread t3</small></div>
+        <p class="note">One worker per (profile, folder). A crash only affects that pair.</p>
+      </div>
+    </div>
+    <figcaption>
+      Solid boxes exist today. Dashed boxes are new work.
+      hoobot is a client, just like the Codex CLI. Everything runs on one Mac.
+    </figcaption>
+  </figure>
+</section>
+
+<!-- ── 16 Roles ────────────────────────────────── -->
+<section class="topic" id="roles" aria-labelledby="h-roles" data-review="roles">
+  <div class="topic-head">
+    <span class="num">16</span>
+    <h2 id="h-roles">Roles: hoocode vs hoobot</h2>
+    <span class="pill new">New</span>
+    <span class="src"><code>16-roles.md</code> · R1, R2</span>
+  </div>
+
+  <div class="scroll"><table class="roles">
+    <thead><tr><th>Concern</th><th>hoocode</th><th>hoobot</th></tr></thead>
+    <tbody>
+      <tr><td>Codex protocol (types, schemas, conformance)</td><td class="own">● owns</td><td>client only</td></tr>
+      <tr><td>Server: socket + WebSocket, many clients</td><td class="own">● owns</td><td>connects</td></tr>
+      <tr><td>Threads, turns, session files</td><td class="own">● owns</td><td>only the surface ↔ thread link</td></tr>
+      <tr><td>Fan-out of events to every client</td><td class="own">● owns</td><td>—</td></tr>
+      <tr><td>Approval routing, first answer wins</td><td class="own">● owns</td><td>shows buttons, sends the answer</td></tr>
+      <tr><td>Profiles (prompt, model, tools, folders)</td><td class="own">● owns</td><td>picks a profile per bot</td></tr>
+      <tr><td>Tool grants + always-allow rules</td><td class="own">● owns</td><td>—</td></tr>
+      <tr><td>Workspace allowlist</td><td class="own">● owns</td><td>—</td></tr>
+      <tr><td>Workers, idle unload, crash isolation</td><td class="own">● owns</td><td>—</td></tr>
+      <tr><td>Thread + approval web UI</td><td class="own">● owns</td><td>—</td></tr>
+      <tr><td>Surface adapters (Discord, Slack, GitHub)</td><td>—</td><td class="own">● owns</td></tr>
+      <tr><td>Surface identity, linking accounts to you</td><td>—</td><td class="own">● owns</td></tr>
+      <tr><td>Routing a message to a bot</td><td>—</td><td class="own">● owns</td></tr>
+      <tr><td>Bot install, registry, bot manager UI</td><td>—</td><td class="own">● owns</td></tr>
+      <tr><td>Surface tokens in the Keychain</td><td>—</td><td class="own">● owns</td></tr>
+      <tr><td>Swift menu-bar app</td><td colspan="2">shared: shows both</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>What this means</h3>
+  <ul>
+    <li><strong>hoobot gets much smaller.</strong> It has no process pool, no policy engine and no session store.</li>
+    <li><strong>hoocode gets much bigger.</strong> Most of the work moves to the hoocode repo.</li>
+    <li><strong>One safety model.</strong> It's the same whether a turn comes from Discord, the Codex CLI or the web UI.</li>
+    <li>hoobot can't do anything until hoocode's server exists, which sets the build order.</li>
+  </ul>
+</section>
+
+<!-- ── 00 Today ────────────────────────────────── -->
+<section class="topic" id="today" aria-labelledby="h-today">
+  <div class="topic-head">
+    <span class="num">00</span>
+    <h2 id="h-today">Where we are today</h2>
+    <span class="pill ok">Context</span>
+    <span class="src"><code>00-context.md</code></span>
+  </div>
+
+  <pre><code>Discord ⇄ hoobot (Bun + discord.js) ⇄ hoocode --mode rpc
+                                       (one process per Discord thread)</code></pre>
+
+  <div class="scroll"><table>
+    <thead><tr><th>File</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/rpc.ts</code></td><td>Starts <code>hoocode --mode rpc</code>. Sends and reads JSON one line at a time.</td></tr>
+      <tr><td><code>src/session.ts</code></td><td>One session per Discord thread. Turns events into messages and approvals into buttons.</td></tr>
+      <tr><td><code>src/index.ts</code></td><td>Discord client, user allowlist, <code>!commands</code>.</td></tr>
+      <tr><td><code>src/config.ts</code></td><td>Reads <code>.env</code>. Writes a project <code>hoo-config.json</code>.</td></tr>
+      <tr><td><code>src/format.ts</code></td><td>Discord formatting and message splitting.</td></tr>
+    </tbody>
+  </table></div>
+  <p><strong>Main blocker:</strong> <code>session.ts</code> mixes hoocode logic with Discord calls. With this design, most of it moves into hoocode's server.</p>
+</section>
+
+<!-- ── 12 Protocol ─────────────────────────────── -->
+<section class="topic" id="protocol" aria-labelledby="h-protocol" data-review="protocol">
+  <div class="topic-head">
+    <span class="num">12</span>
+    <h2 id="h-protocol">Protocol and server</h2>
+    <span class="pill new">Revised</span>
+    <span class="src"><code>12-protocol.md</code> · R1, R3, R9, R11</span>
+  </div>
+
+  <ol class="decisions">
+    <li><div><p><strong><code>hoocode app-server</code> is a full server</strong>, modelled on <code>codex app-server</code>: a daemon with many threads and many clients. It sends events and approvals to every client on a thread, and the first answer wins.</p></div></li>
+    <li><div><p><strong>The Codex app-server protocol, as-is.</strong> Stock Codex clients are a real goal.</p></div></li>
+    <li><div><p><strong>Transports:</strong> stdio (tests, one client), a Unix socket with mode 0600, and a WebSocket on <code>127.0.0.1</code> with a token.</p></div></li>
+    <li><div><p><strong>Copy only the protocol from <code>../codex</code>:</strong> its generated TS types and JSON schemas, pinned to a commit. Write the server in TypeScript. The Rust code is a reference. Codex is Apache-2.0, so keep its notice.</p></div></li>
+    <li><div><p><strong>Dialogs use <code>item/tool/requestUserInput</code>.</strong> Only the editor dialog needs a <code>hoocode/*</code> fallback.</p></div></li>
+    <li><div><p><strong>Any process running as your user is the owner.</strong> The socket's file permissions are the authentication.</p></div></li>
+    <li><div><p><strong>Extensions use <code>hoocode/*</code></strong>, for profiles and policy. There are no <code>hoobot/*</code> methods.</p></div></li>
+  </ol>
+
+  <h3>What <code>../codex</code> gives us</h3>
+  <p class="hint">Checked in the local clone at commit <code>bcd6d9ab6</code> (30 Sep 2026).</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Piece</th><th>Where in <code>codex-rs/</code></th><th>Use</th></tr></thead>
+    <tbody>
+      <tr><td>TS types (~640 v2 files)</td><td><code>app-server-protocol/schema/typescript/</code></td><td><span class="pill ok">Copy in</span></td></tr>
+      <tr><td>JSON schemas</td><td><code>app-server-protocol/schema/json/</code></td><td><span class="pill ok">Copy in</span> for tests</td></tr>
+      <tr><td>Server behaviour</td><td><code>app-server/src/</code></td><td>Reference</td></tr>
+      <tr><td>Socket + WebSocket</td><td><code>app-server-transport/</code></td><td>Reference</td></tr>
+      <tr><td>Daemon lifecycle</td><td><code>app-server-daemon/</code></td><td>Reference</td></tr>
+      <tr><td>Test client</td><td><code>app-server-test-client/</code></td><td>Drive hoocode in tests</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Found in the Codex code</h3>
+  <ul>
+    <li><strong>Fan-out is built in.</strong> <code>thread_state.rs</code> tracks which connections subscribe to each thread and sends requests to all of them.</li>
+    <li><strong>Dialogs are covered.</strong> A question can have options, a free-text answer (<code>isOther</code>) and hidden input (<code>isSecret</code>).</li>
+    <li><strong>Permission profiles</strong> already exist in Codex (<code>[permissions.&lt;id&gt;]</code> with <code>extends</code>). hoocode profiles should line up with them.</li>
+  </ul>
+
+  <h3>Mapping hoocode onto Codex</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>hoocode today</th><th>Codex protocol</th></tr></thead>
+    <tbody>
+      <tr><td>Session (JSONL)</td><td>Thread; the JSONL stays the source of truth</td></tr>
+      <tr><td><code>prompt</code></td><td><code>turn/start</code></td></tr>
+      <tr><td><code>steer</code> / <code>follow_up</code></td><td><code>turn/steer</code></td></tr>
+      <tr><td><code>abort</code></td><td><code>turn/interrupt</code></td></tr>
+      <tr><td>Tool confirm</td><td><code>item/commandExecution/requestApproval</code>, <code>item/fileChange/requestApproval</code></td></tr>
+      <tr><td>Pick-an-option / type-an-answer dialogs</td><td><code>item/tool/requestUserInput</code></td></tr>
+      <tr><td>Editor dialog</td><td><code>hoocode/*</code> extension</td></tr>
+      <tr><td>Streaming text and tool events</td><td><code>item/*</code> notifications</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="callout">
+    <span class="label">Wire notes</span>
+    <ul>
+      <li>Codex leaves out <code>"jsonrpc":"2.0"</code> on the wire.</li>
+      <li>Cancelling uses <code>turn/interrupt</code>, not <code>$/cancelRequest</code>.</li>
+      <li>Unsupported methods return schema-valid neutral results, never "method not found".</li>
+      <li>Approval settings are really enforced, unlike in pi-codex-app-server.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ── 10 Bot model ────────────────────────────── -->
+<section class="topic" id="bot" aria-labelledby="h-bot" data-review="bot">
+  <div class="topic-head">
+    <span class="num">10</span>
+    <h2 id="h-bot">What a bot is</h2>
+    <span class="pill new">Revised</span>
+    <span class="src"><code>10-bot-model.md</code> · T1, R5, R12</span>
+  </div>
+
+  <ol class="decisions">
+    <li><div><p><strong>A bot is a persona, not a connection.</strong></p></div></li>
+    <li><div><p><strong>Adapters are shared plumbing.</strong> One adapter per surface account hosts many bots, routed by mention, channel or command.</p></div></li>
+    <li><div><p><strong>The persona is a hoocode profile</strong>: prompt, model, tools, folders and rules. Profiles are useful without hoobot.</p></div></li>
+    <li><div><p><strong>A bot = a hoocode profile + hoobot routing.</strong></p></div></li>
+    <li><div><p><strong>A package has two sections.</strong> <code>hoocode.profiles</code> holds the persona and is read by hoocode, which asks you to grant tools. <code>hoobot</code> holds only surfaces and routing.</p></div></li>
+  </ol>
+
+  <pre><code>Discord adapter (1 token) ─┬─ @reviewer  → bot "reviewer" → profile "reviewer"
+                           └─ @helper    → bot "helper"   → profile "helper"
+Slack adapter   (1 token) ─── /hoo ask   → bot "helper"   → profile "helper"</code></pre>
+
+  <h3>Package sketch (not final)</h3>
+  <pre><code>{
+  "name": "@me/hoobot-reviewer",
+  "hoocode": {
+    "extensions": ["./ext"],
+    "skills": ["./skills"],
+    "profiles": {                                 <span class="cm">// read by hoocode</span>
+      "reviewer": {
+        "systemPrompt": "./prompt.md",
+        "model": "...",
+        "tools": ["read", "bash"],               <span class="cm">// requested; you grant</span>
+        "workspace": "own-folder"
+      }
+    }
+  },
+  "hoobot": {                                     <span class="cm">// read by hoobot only</span>
+    "manifestVersion": 1,
+    "bots": [{
+      "id": "reviewer",
+      "profile": "reviewer",
+      "displayName": "Reviewer",
+      "surfaces": ["discord", "slack"],
+      "routing": { "mention": true, "commands": ["review"] }
+    }]
+  }
+}</code></pre>
+</section>
+
+<!-- ── 13 Sessions ─────────────────────────────── -->
+<section class="topic" id="sessions" aria-labelledby="h-sessions" data-review="sessions">
+  <div class="topic-head">
+    <span class="num">13</span>
+    <h2 id="h-sessions">Sessions, workspaces and processes</h2>
+    <span class="pill new">Revised</span>
+    <span class="src"><code>13-sessions-workspaces.md</code> · T4, R6, R10</span>
+  </div>
+
+  <ol class="decisions">
+    <li><div><p><strong>Threads belong to hoocode's server.</strong> Start on Discord, then continue in the web UI or the Codex CLI.</p></div></li>
+    <li><div><p><strong>Each profile has a default folder</strong>, plus an allowlist of project folders. hoocode rejects any other path.</p></div></li>
+    <li><div><p><strong>The server is a thin supervisor</strong> with one worker per (profile, folder), each hosting many threads.</p></div></li>
+    <li><div><p><strong>Idle threads unload</strong> and resume from JSONL. A worker exits when it has no threads loaded.</p></div></li>
+    <li><div><p><strong>The link between surface threads and hoocode threads lives in hoobot.</strong> hoocode never learns about Discord.</p></div></li>
+  </ol>
+
+  <h3>hoobot's link store</h3>
+  <pre><code><span class="cm">// ~/.local/share/hoobot/links.json (or SQLite)</span>
+{
+  "discord:1234567890":          { "threadId": "t1", "botId": "reviewer" },
+  "slack:C01/1700000000.1234":   { "threadId": "t1", "botId": "reviewer" }
+}</code></pre>
+  <p>Two surface threads can point to the same hoocode thread. hoobot marks who spoke with a short label in the message, such as <code>[discord: sachin]</code>.</p>
+
+  <h3>Rules when several clients show one thread (hoocode enforces them)</h3>
+  <ul>
+    <li><strong>One turn at a time.</strong> A message sent during a run becomes <code>turn/steer</code>.</li>
+    <li><strong>Events go to every subscribed client.</strong> Discord shows a summary; the web UI shows everything.</li>
+    <li><strong>Approvals go to every subscribed client.</strong> The first answer wins.</li>
+    <li><strong>Session files are stored by hoocode</strong>, for example <code>~/.local/share/hoocode/sessions/&lt;profile&gt;/&lt;thread&gt;.jsonl</code>.</li>
+  </ul>
+
+  <div class="callout">
+    <span class="label">Migration</span>
+    <p>The old <code>discord-sessions/&lt;id&gt;</code> folders are imported into hoocode as threads of the default profile. hoobot writes a <code>discord:&lt;id&gt;</code> link for each one.</p>
+  </div>
+</section>
+
+<!-- ── 14 Safety ───────────────────────────────── -->
+<section class="topic" id="safety" aria-labelledby="h-safety" data-review="safety">
+  <div class="topic-head">
+    <span class="num">14</span>
+    <h2 id="h-safety">Users, approvals and safety</h2>
+    <span class="pill new">Revised</span>
+    <span class="src"><code>14-users-safety.md</code> · T5, R4, R11</span>
+  </div>
+
+  <ol class="decisions">
+    <li><div><p><strong>Single owner: you.</strong> hoobot links each surface account to you and ignores messages from unlinked IDs.</p></div></li>
+    <li><div><p><strong>Only you approve</strong>, from any client subscribed to the thread. hoocode routes the request.</p></div></li>
+    <li><div><p><strong>A package requests tools; you grant them</strong> when installing through hoocode. The worker gets only the granted tools.</p></div></li>
+    <li><div><p><strong>"Always allow" rules live in hoocode policy</strong>, per (profile, folder). They are never global.</p></div></li>
+    <li><div><p><strong>Server access:</strong> any process running as your user (socket mode 0600). WebSocket clients need a token.</p></div></li>
+    <li><div><p><strong>ChatGPT mobile relay:</strong> later, opt-in, off by default.</p></div></li>
+  </ol>
+
+  <h3>Five layers of protection</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>#</th><th>Layer</th><th>Lives in</th><th>Stops</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td>Surface filter</td><td>hoobot</td><td>Strangers in a shared server</td></tr>
+      <tr><td class="num">2</td><td>Socket permissions, WS token + Origin check</td><td><strong>hoocode</strong></td><td>Other users, other websites</td></tr>
+      <tr><td class="num">3</td><td>Profile grants → worker tool list</td><td><strong>hoocode</strong></td><td>A bot using tools it wasn't given</td></tr>
+      <tr><td class="num">4</td><td>Approval gate + always-allow rules</td><td><strong>hoocode</strong></td><td>Unapproved bash / edit / write</td></tr>
+      <tr><td class="num">5</td><td>Workspace allowlist</td><td><strong>hoocode</strong></td><td>Escaping to other folders</td></tr>
+    </tbody>
+  </table></div>
+  <p>Layers 2–5 protect every client, not just hoobot.</p>
+
+  <h3>How an approval travels</h3>
+  <ol class="flow">
+    <li><span>A worker asks hoocode's server to approve a tool call.</span></li>
+    <li><span>The server checks the always-allow rules for this profile and folder. On a match, it approves.</span></li>
+    <li><span>Otherwise it asks every subscribed client: hoobot shows Discord buttons, alongside the web UI, the Codex CLI and a menu-bar notification.</span></li>
+    <li><span>The first answer wins: <strong>Accept</strong>, <strong>Accept for session</strong> or <strong>Decline</strong>.</span></li>
+    <li><span>No answer in 10 minutes means Decline.</span></li>
+  </ol>
+
+  <h3>Policy record (hoocode side, sketch)</h3>
+  <pre><code>{
+  "id": "reviewer",
+  "requested": ["read", "bash", "edit"],
+  "granted":   ["read", "bash"],
+  "workspaces": ["~/github/hoobot", "~/github/other"],
+  "alwaysAllow": {
+    "~/github/hoobot": ["bash:git status", "bash:bun test"]
+  }
+}</code></pre>
+</section>
+
+<!-- ── 11 Desktop ──────────────────────────────── -->
+<section class="topic" id="desktop" aria-labelledby="h-desktop" data-review="desktop">
+  <div class="topic-head">
+    <span class="num">11</span>
+    <h2 id="h-desktop">UIs, menu-bar app and bot registry</h2>
+    <span class="pill new">Revised</span>
+    <span class="src"><code>11-desktop-app.md</code> · T2, R8</span>
+  </div>
+
+  <div class="scroll"><table>
+    <thead><tr><th>UI</th><th>Served by</th><th>Shows</th></tr></thead>
+    <tbody>
+      <tr><td>Thread + approval UI</td><td><strong>hoocode</strong> (<code>127.0.0.1</code>, token)</td><td>Threads, live turns, approvals, profiles, grants, rules</td></tr>
+      <tr><td>Bot manager UI</td><td><strong>hoobot</strong> (<code>127.0.0.1</code>)</td><td>Bots, surfaces, account linking, registry, adapter logs</td></tr>
+      <tr><td>Swift menu-bar app</td><td>its own small app</td><td>Status of both, links to open each UI, approval notifications</td></tr>
+    </tbody>
+  </table></div>
+
+  <ul>
+    <li><strong>C++/Qt is dropped.</strong> The UIs run in the browser, which gives zoom and VoiceOver for free. The small Swift app provides the menu-bar icon.</li>
+    <li><strong>macOS only.</strong></li>
+    <li><strong>The app ships through GitHub Releases</strong>, built by CI from merged PRs.</li>
+    <li><strong>Bots are published by PR</strong> to a personal registry repo that only you merge. Entries pin a version and hash.</li>
+    <li><strong>The registry lists bots only.</strong> Adapters ship inside hoobot.</li>
+  </ul>
+
+  <pre><code>hoobot-registry/
+  bots/
+    reviewer.json   <span class="cm"># name, source (npm: / git:), version, sha</span>
+    helper.json</code></pre>
+</section>
+
+<!-- ── 15 Roadmap ──────────────────────────────── -->
+<section class="topic" id="roadmap" aria-labelledby="h-roadmap" data-review="roadmap">
+  <div class="topic-head">
+    <span class="num">15</span>
+    <h2 id="h-roadmap">Scope and roadmap</h2>
+    <span class="pill new">Revised</span>
+    <span class="src"><code>15-scope-roadmap.md</code> · T6, R7, R13</span>
+  </div>
+
+  <ol class="decisions">
+    <li><div><p><strong>Next surfaces: Slack, then GitHub.</strong></p></div></li>
+    <li><div><p><strong>Same Mac only.</strong></p></div></li>
+    <li><div><p><strong>hoobot is one process</strong> that hosts every adapter and the bot manager. It's TypeScript on Bun, with one module per surface.</p></div></li>
+  </ol>
+
+  <h3>Build order</h3>
+  <ol class="phases">
+    <li>
+      <span class="ph">Phase 1</span>
+      <div>
+        <h3>hoocode app-server</h3>
+        <p class="where">hoocode repo</p>
+        <ul>
+          <li>Copy in the Codex types and schemas, pinned</li>
+          <li>Map sessions to threads, prompts to turns, events to items</li>
+          <li>Map tool confirms to approvals, and dialogs to <code>requestUserInput</code></li>
+          <li>stdio first, then socket and WebSocket, with fan-out</li>
+          <li>Supervisor plus workers</li>
+          <li>Tested with the stock Codex CLI and the Codex test client</li>
+        </ul>
+      </div>
+    </li>
+    <li>
+      <span class="ph">Phase 2</span>
+      <div>
+        <h3>Profiles and policy</h3>
+        <p class="where">hoocode repo</p>
+        <ul>
+          <li>Profiles: prompt, model, tools, folders</li>
+          <li>Requested vs granted tools; always-allow rules; workspace allowlist</li>
+          <li><code>hoocode/*</code> methods to manage them</li>
+          <li>Until this lands, the server asks about every approval</li>
+        </ul>
+      </div>
+    </li>
+    <li>
+      <span class="ph">Phase 3</span>
+      <div>
+        <h3>hoobot client and the Discord port</h3>
+        <p class="where">this repo</p>
+        <ul>
+          <li>Shared Codex client; Discord talks to hoocode's socket</li>
+          <li>Link store, identity; migrate the old sessions</li>
+          <li>launchd: one service for <code>hoocode app-server</code>, one for <code>hoobot</code></li>
+        </ul>
+      </div>
+    </li>
+    <li>
+      <span class="ph">Phase 4</span>
+      <div>
+        <h3>UIs and the menu-bar app</h3>
+        <ul>
+          <li>hoocode UI, hoobot UI, Swift menu-bar app</li>
+          <li>Registry repo with CI; GitHub Releases</li>
+        </ul>
+      </div>
+    </li>
+    <li>
+      <span class="ph">Phase 5</span>
+      <div>
+        <h3>New surfaces</h3>
+        <ul><li>Slack, then GitHub</li></ul>
+      </div>
+    </li>
+  </ol>
+
+  <h3>Surface details</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>Surface</th><th>Connects by</th><th>A thread is</th><th>Approvals</th></tr></thead>
+    <tbody>
+      <tr><td>Discord</td><td>Gateway (outbound)</td><td>a Discord thread</td><td>Buttons</td></tr>
+      <tr><td>Slack</td><td>Socket Mode (outbound)</td><td>a Slack thread</td><td>Block Kit buttons</td></tr>
+      <tr><td>GitHub</td><td>Polling with <code>gh</code></td><td>an issue or PR</td><td><strong>Never on GitHub.</strong> Answered from another client.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>hoobot repo layout (sketch)</h3>
+  <pre><code>hoobot/
+  docs/design/
+  src/
+    codex-client/   <span class="cm">shared client for hoocode's socket</span>
+    adapters/
+      discord/
+      slack/
+      github/
+    bots/           <span class="cm">routing, manifests, registry client</span>
+    links/          <span class="cm">surface ↔ thread store, identity</span>
+    web/            <span class="cm">bot manager UI</span>
+  tray/             <span class="cm">Swift menu-bar app (may live elsewhere)</span></code></pre>
+</section>
+
+<!-- ── 03 Surfaces ─────────────────────────────── -->
+<section class="topic" id="surfaces" aria-labelledby="h-surfaces">
+  <div class="topic-head">
+    <span class="num">03</span>
+    <h2 id="h-surfaces">Every surface we considered</h2>
+    <span class="pill old">Reference</span>
+    <span class="src"><code>03-surfaces.md</code> · "outbound" means no open ports</span>
+  </div>
+
+  <div class="scroll"><table>
+    <thead><tr><th>Group</th><th>Surface</th><th>Connects by</th><th>Status / notes</th></tr></thead>
+    <tbody>
+      <tr><td>Chat</td><td>Discord</td><td>Outbound</td><td><span class="pill ok">Done</span></td></tr>
+      <tr><td>Chat</td><td>Slack</td><td>Outbound (Socket Mode)</td><td><span class="pill open">Next</span></td></tr>
+      <tr><td>Chat</td><td>Telegram</td><td>Outbound (long polling)</td><td>Very easy API</td></tr>
+      <tr><td>Chat</td><td>Matrix</td><td>Outbound</td><td>Self-hostable</td></tr>
+      <tr><td>Chat</td><td>Mattermost</td><td>Outbound (WebSocket)</td><td></td></tr>
+      <tr><td>Chat</td><td>Microsoft Teams</td><td>Inbound / Azure</td><td>Hardest</td></tr>
+      <tr><td>Personal</td><td>iMessage</td><td>Local, macOS only</td><td>Fragile, unofficial</td></tr>
+      <tr><td>Personal</td><td>Signal</td><td>Local (<code>signal-cli</code>)</td><td>Unofficial</td></tr>
+      <tr><td>Personal</td><td>WhatsApp</td><td>Unofficial libraries</td><td>Against ToS, ban risk</td></tr>
+      <tr><td>Dev</td><td>GitHub PR / issues</td><td>Polling or <code>gh</code></td><td><span class="pill open">After Slack</span></td></tr>
+      <tr><td>Dev</td><td>GitHub Actions</td><td>Runs in CI</td><td>Different trust model</td></tr>
+      <tr><td>Local</td><td>Menu-bar app</td><td>Unix socket</td><td><span class="pill open">Phase 4</span></td></tr>
+      <tr><td>Local</td><td>hoocode + hoobot web UIs</td><td>localhost</td><td><span class="pill open">Phase 4</span></td></tr>
+      <tr><td>Local</td><td>Codex CLI</td><td>Unix socket</td><td>Free with Codex protocol</td></tr>
+      <tr><td>Editor</td><td>VS Code</td><td>Codex IDE extension</td><td>Free with Codex protocol</td></tr>
+      <tr><td>Editor</td><td>Neovim / Zed</td><td>ACP</td><td>Would need an ACP front door</td></tr>
+      <tr><td>Local</td><td>Raycast / Alfred / Shortcuts</td><td>Local</td><td></td></tr>
+      <tr><td>Automation</td><td>Scheduled jobs, email, file watcher, Home Assistant</td><td>Local / outbound</td><td></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ── Risks ───────────────────────────────────── -->
+<section class="topic" id="risks" aria-labelledby="h-risks">
+  <div class="topic-head">
+    <span class="num">!</span>
+    <h2 id="h-risks">Things to check</h2>
+    <span class="pill open">Needs your eye</span>
+  </div>
+
+  <div class="two">
+    <div class="callout warn">
+      <span class="label">hoocode gets big</span>
+      <p>The server, fan-out, supervisor, profiles and policy all land in <strong>hoocode</strong>. That is most of the project, and it's a larger change to hoocode than a new mode.</p>
+    </div>
+    <div class="callout warn">
+      <span class="label">Keeping up with Codex</span>
+      <p>Codex changes its protocol often: the local clone was committed today. Pinning helps, but stock clients will expect newer methods over time.</p>
+    </div>
+    <div class="callout warn">
+      <span class="label">Experimental API</span>
+      <p><code>item/tool/requestUserInput</code> is marked <strong>experimental</strong> in Codex, so its shape may change.</p>
+    </div>
+    <div class="callout warn">
+      <span class="label">Unix socket = owner</span>
+      <p>Any process running as your user can drive hoocode, including approving its own tool calls. That's fine on a single-user Mac, but it isn't a sandbox.</p>
+    </div>
+    <div class="callout warn">
+      <span class="label">Shared folders</span>
+      <p>Two profiles in <strong>the same folder</strong> means two workers editing the same files. It's allowed, but the UI should warn.</p>
+    </div>
+    <div class="callout warn">
+      <span class="label">Not verified</span>
+      <p>I read the Codex README, the schemas and <code>thread_state.rs</code>, not the full server. The mapping table is a plan, not tested.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── Open ────────────────────────────────────── -->
+<section class="topic" id="open" aria-labelledby="h-open">
+  <div class="topic-head">
+    <span class="num">?</span>
+    <h2 id="h-open">Still open</h2>
+    <span class="pill open">To discuss</span>
+    <span class="src"><code>01-open-questions.md</code></span>
+  </div>
+
+  <div class="scroll"><table>
+    <thead><tr><th>Doc</th><th>Question</th></tr></thead>
+    <tbody>
+      <tr><td class="num">10</td><td>Profile fields. Line up with Codex permission profiles? Two bots claiming one command?</td></tr>
+      <tr><td class="num">11</td><td>Swift menu-bar app: Xcode or not? Signing identity? Which repo?</td></tr>
+      <tr><td class="num">12</td><td>How to follow upstream Codex (manual bump or script with a schema diff)? How much experimental API?</td></tr>
+      <tr><td class="num">12</td><td>hoocode daemon commands, the launchd plist, the socket path under <code>~/.local/state/hoocode/</code>.</td></tr>
+      <tr><td class="num">13</td><td>Idle timeout (today 30 min). Maximum number of workers. Delete vs archive.</td></tr>
+      <tr><td class="num">14</td><td>Linking accounts (pairing code?). Always-allow rule syntax. Where the WebSocket token lives.</td></tr>
+      <tr><td class="num">15</td><td>Which bot answers an unaddressed message? Logs? How to test adapters?</td></tr>
+      <tr><td class="num">17</td><td>Daemon crash: how clients learn a turn was interrupted; restart policy.</td></tr>
+      <tr><td class="num">17</td><td>How policy in core shows approvals in the terminal UI vs the server.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ── Log ─────────────────────────────────────── -->
+<section class="topic" id="log" aria-labelledby="h-log">
+  <div class="topic-head">
+    <span class="num">≡</span>
+    <h2 id="h-log">Decision log: rethink</h2>
+    <span class="pill ok">18 decisions</span>
+    <span class="src"><code>README.md</code> keeps the full log, with replaced rows struck through</span>
+  </div>
+
+  <div class="scroll"><table>
+    <thead><tr><th>#</th><th>Decision</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td class="num">R1</td><td><code>hoocode app-server</code> is a full server (socket + WS, many clients, fan-out). No hub</td><td>Codex already works this way; clear roles</td></tr>
+      <tr><td class="num">R2</td><td>hoocode = engine + server; hoobot = bots + surfaces</td><td>If it's useful without hoobot, it goes in hoocode</td></tr>
+      <tr><td class="num">R3</td><td>Copy only the Codex protocol (TS types + schemas), pinned; server in TS</td><td>Codex is Rust, hoocode is TS; the schemas are the contract</td></tr>
+      <tr><td class="num">R4</td><td>Grants and always-allow enforced in hoocode</td><td>Same safety for every client</td></tr>
+      <tr><td class="num">R5</td><td>hoocode gets a general "profile" concept</td><td>A persona is useful without hoobot</td></tr>
+      <tr><td class="num">R6</td><td>Supervisor + worker per (profile, workspace)</td><td>Crash isolation; one working folder per worker</td></tr>
+      <tr><td class="num">R7</td><td>hoobot = one process: all adapters + bot manager</td><td>Small and simple</td></tr>
+      <tr><td class="num">R8</td><td>UI split: hoocode for threads, hoobot for bots, one menu-bar app</td><td>Each UI lives with its data</td></tr>
+      <tr><td class="num">R9</td><td>Dialogs use <code>item/tool/requestUserInput</code></td><td>Already in Codex</td></tr>
+      <tr><td class="num">R10</td><td>Surface ↔ thread links stored in hoobot</td><td>hoocode never learns about Discord</td></tr>
+      <tr><td class="num">R11</td><td>Any process running as your user = owner; WS needs a token</td><td>Same Mac, single user</td></tr>
+      <tr><td class="num">R12</td><td><code>hoocode.profiles</code> = persona; <code>hoobot</code> = routing</td><td>Each tool reads its own section</td></tr>
+      <tr><td class="num">R13</td><td>Build: app-server → profiles + policy → hoobot Discord → UIs → Slack, GitHub</td><td>The server first</td></tr>
+      <tr><td class="num">R14</td><td>Docs 12–15 rewritten in place; README log keeps history</td><td>One current design</td></tr>
+      <tr><td class="num">B+</td><td>Architecture locked as B+ over A, A′, C, D, E, F</td><td>Server usable without hoobot; terminal UI shares threads</td></tr>
+      <tr><td class="num">R15</td><td>Profiles and policy in hoocode's core</td><td>Safety covers terminal UI, rpc, print</td></tr>
+      <tr><td class="num">R16</td><td>Layers: engine → policy → stdio app-server → daemon</td><td>Each layer can be tested; thin daemon</td></tr>
+      <tr><td class="num">R17</td><td>hoobot uses only standard Codex methods; tested against real Codex</td><td>Keeps both sides honest</td></tr>
+      <tr><td class="num">R18</td><td>Later: terminal UI becomes a daemon client</td><td>Open a bot's thread live</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<footer>
+  Reading copy of <code>docs/design/*.md</code>, revision 3, 30 Sep 2026.
+  The Markdown files are the source of truth.
+</footer>
+
+</main>
+</div>
+
+<script>
+(() => {
+  const root = document.documentElement;
+  const store = (k, v) => { try { v === undefined ? null : localStorage.setItem(k, v); return localStorage.getItem(k); } catch { return null; } };
+
+  // Text size
+  const buttons = document.querySelectorAll(".sizer button");
+  const setSize = (s) => {
+    if (s === "m") root.removeAttribute("data-size"); else root.setAttribute("data-size", s);
+    buttons.forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.size === s)));
+    store("hoobot-design-size", s);
+  };
+  const labels = { m: "Normal text", l: "Large text", xl: "Extra large text" };
+  buttons.forEach((b) => {
+    b.setAttribute("aria-label", labels[b.dataset.size]);
+    b.addEventListener("click", () => setSize(b.dataset.size));
+  });
+  setSize(store("hoobot-design-size") || "m");
+
+  // Review checkboxes
+  const topics = document.querySelectorAll("section[data-review]");
+  const bar = document.getElementById("bar");
+  const text = document.getElementById("progress-text");
+  const update = () => {
+    const done = document.querySelectorAll("section[data-review] .review input:checked").length;
+    bar.style.width = (done / topics.length) * 100 + "%";
+    text.textContent = `${done} of ${topics.length} topics reviewed`;
+  };
+  topics.forEach((sec) => {
+    const key = "hoobot-design-review-" + sec.dataset.review;
+    const label = document.createElement("label");
+    label.className = "review";
+    label.innerHTML = '<input type="checkbox"><span>Reviewed</span>';
+    const box = label.querySelector("input");
+    box.checked = store(key) === "1";
+    box.addEventListener("change", () => { store(key, box.checked ? "1" : "0"); update(); });
+    const head = sec.querySelector(".topic-head");
+    head.insertBefore(label, head.querySelector(".src"));
+  });
+  update();
+
+  // Highlight current section in contents
+  const links = new Map([...document.querySelectorAll(".rail nav a")].map((a) => [a.getAttribute("href").slice(1), a]));
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => {
+      if (e.isIntersecting) {
+        links.forEach((a) => a.classList.remove("here"));
+        links.get(e.target.id)?.classList.add("here");
+      }
+    });
+  }, { rootMargin: "-20% 0px -70% 0px" });
+  document.querySelectorAll("main > header, main > section").forEach((s) => io.observe(s));
+})();
+</script>
+</body>
+</html>
