@@ -59,3 +59,7 @@ do first, and what changes in the B+ plan now that hoocode is Rust.
   Apache-2.0", which we can take as MIT; a few may be Apache-only.
 - Does hoobot stay TypeScript on Bun, or move to Rust and use the protocol
   crate directly?
+- hoocode RPC approvals: mark warm subagent workers as "no prompts" with an
+  internal env var or a CLI flag?
+
+Tracked as T7 in [01-open-questions.md](01-open-questions.md).
