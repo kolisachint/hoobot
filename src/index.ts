@@ -23,8 +23,21 @@ import { CodexClient } from "./codex-client.ts";
 import { LinkStore } from "./links.ts";
 import { ThreadSession } from "./session.ts";
 import { authorName, buildPrompt, gatherContext, toContext, type ContextMessage, type SpaceLike } from "./context.ts";
+import { clearSpace, formatAttachments, imageInputs, pruneInbox, saveAttachments, type SavedFile, type SkippedFile } from "./inbound.ts";
 
 for (const dir of allWorkdirs()) prepareWorkspace(dir);
+// Files sent on Discord are kept a week.
+const prune = () => {
+  for (const dir of allWorkdirs()) {
+    try {
+      pruneInbox(dir);
+    } catch (err) {
+      console.error(`Can't clean ${dir}/.discord: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+};
+prune();
+setInterval(prune, 60 * 60 * 1000).unref();
 
 const links = new LinkStore(config.linksFile);
 const sessions = new Map<string, ThreadSession>();
@@ -81,10 +94,11 @@ const HELP = [
   "Every channel and thread is a shared space: anyone can talk, and when I'm called",
   "I read what was said since I last looked (up to 30 messages).",
   "Open a thread for a side task; it has its own conversation in the same folder.",
+  "Attach files (or reply to a message with files): I save them in the work folder and read them.",
   "",
   "**Commands** (for this channel or thread)",
   "- `!stop`: stop the current run",
-  "- `!new`: start a fresh conversation here (for everyone)",
+  "- `!new`: start a fresh conversation here (for everyone; deletes files sent here)",
   "- `!status`: model, busy or not, folder",
   "- `!model`: pick the model here from a list (from the next message; the conversation carries on)",
   "- `!model <part of name>`: pick it directly, e.g. `!model kimi`",
@@ -142,9 +156,7 @@ async function onMessage(message: Message) {
     .replace(new RegExp(`<@!?${client.user.id}>`, "g"), "")
     .replace(botRoleId ? new RegExp(`<@&${botRoleId}>`, "g") : /$^/, "")
     .trim();
-  const images = await imageAttachments(message);
-
-  if (!text && images.length === 0) {
+  if (!text && message.attachments.size === 0) {
     await message.reply(HELP);
     return;
   }
@@ -168,6 +180,7 @@ async function onMessage(message: Message) {
     case "!stop":
       return session.abort();
     case "!new":
+      clearSpace(session.workdir, space.id);
       return session.newSession();
     case "!status":
       return session.status();
@@ -181,17 +194,34 @@ async function onMessage(message: Message) {
   await inOrder(space.id, async () => {
     // What was said here since the conversation last read, plus the message replied to.
     const { linked, seen } = await session.readState();
-    const [context, replyTo] = await Promise.all([
+    const [context, reply] = await Promise.all([
       gatherContext({ space: space as unknown as SpaceLike, before: message.id, botId: client.user!.id, linked, seen }),
       fetchReplyTo(message, client.user!.id),
     ]);
+    // Files on the calling message and on the message it replies to are
+    // saved in the work folder; small text ones are pasted in too.
+    const saved: SavedFile[] = [];
+    const skipped: SkippedFile[] = [];
+    for (const m of [reply?.message, message]) {
+      if (!m?.attachments.size) continue;
+      const r = await saveAttachments({
+        workdir: session.workdir,
+        spaceId: space.id,
+        messageId: m.id,
+        author: authorName(m),
+        attachments: m.attachments.values(),
+      });
+      saved.push(...r.saved);
+      skipped.push(...r.skipped);
+    }
     const prompt = buildPrompt({
       context,
-      replyTo,
+      replyTo: reply?.context,
+      attachments: formatAttachments(saved, skipped),
       author: authorName(message),
-      text: text || "(see attached image)",
+      text: text || "(see the attached files)",
     });
-    if (await session.prompt(prompt, images, message)) session.markSeen(message.id);
+    if (await session.prompt(prompt, imageInputs(saved), message)) session.markSeen(message.id);
   });
 }
 
@@ -205,11 +235,16 @@ function inOrder(key: string, fn: () => Promise<unknown>): Promise<unknown> {
   return next;
 }
 
-/** The message `message` replies to, unless it's the bot's own (already in the conversation). */
-async function fetchReplyTo(message: Message, botId: string): Promise<ContextMessage | null> {
+/**
+ * The message `message` replies to, unless it's the bot's own (already in the
+ * conversation, and its files are already in the work folder).
+ */
+async function fetchReplyTo(message: Message, botId: string): Promise<{ message: Message; context: ContextMessage | null } | null> {
   if (!message.reference?.messageId || message.mentions.repliedUser?.id === botId) return null;
   try {
-    return toContext(await message.fetchReference(), botId);
+    const ref = await message.fetchReference();
+    if (ref.author.id === botId) return null;
+    return { message: ref, context: toContext(ref, botId) };
   } catch {
     return null;
   }
@@ -223,18 +258,6 @@ async function getSession(space: TextChannel | ThreadChannel, workdir: string): 
     sessions.set(space.id, s);
   }
   return s;
-}
-
-async function imageAttachments(message: Message) {
-  const out: { data: string; mimeType: string }[] = [];
-  for (const att of message.attachments.values()) {
-    const mime = att.contentType?.split(";")[0] ?? "";
-    if (!mime.startsWith("image/") || att.size > 5_000_000) continue;
-    const res = await fetch(att.url);
-    if (!res.ok) continue;
-    out.push({ data: Buffer.from(await res.arrayBuffer()).toString("base64"), mimeType: mime });
-  }
-  return out;
 }
 
 function shutdown() {

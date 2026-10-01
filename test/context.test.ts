@@ -122,3 +122,14 @@ test("the prompt names the sender and quotes a reply", () => {
   });
   expect(p).toBe('<discord-context>…</discord-context>\n\n(in reply to bob: "logs say column exists")\n\nsachin: fix this');
 });
+
+test("buildPrompt puts sent files between the reply and the request", () => {
+  expect(
+    buildPrompt({
+      replyTo: { id: "1", author: "bob", text: "here", at: 0 },
+      attachments: "<discord-attachments>\n- x\n</discord-attachments>",
+      author: "alice",
+      text: "look",
+    }),
+  ).toBe('(in reply to bob: "here")\n\n<discord-attachments>\n- x\n</discord-attachments>\n\nalice: look');
+});

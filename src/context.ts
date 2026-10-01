@@ -144,11 +144,18 @@ export function formatContext(messages: ContextMessage[], where: string): string
   ].join("\n");
 }
 
-/** The prompt: background, the message replied to, then `author: request`. */
-export function buildPrompt(opts: { context?: string; replyTo?: ContextMessage | null; author: string; text: string }): string {
+/** The prompt: background, the message replied to, files sent, then `author: request`. */
+export function buildPrompt(opts: {
+  context?: string;
+  replyTo?: ContextMessage | null;
+  attachments?: string;
+  author: string;
+  text: string;
+}): string {
   const parts: string[] = [];
   if (opts.context) parts.push(opts.context);
   if (opts.replyTo) parts.push(`(in reply to ${opts.replyTo.author}: "${truncate(opts.replyTo.text, 500)}")`);
+  if (opts.attachments) parts.push(opts.attachments);
   parts.push(`${opts.author}: ${opts.text}`);
   return parts.join("\n\n");
 }

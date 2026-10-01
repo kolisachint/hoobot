@@ -125,12 +125,22 @@ export function prepareWorkspace(workdir = config.workdir) {
   }
 
   const promptPath = join(hooDir, "modes", "discord", "system.md");
-  writeGenerated(promptPath, systemPrompt(ask), [systemPrompt(true), systemPrompt(false), systemPrompt(true, false), systemPrompt(false, false), LEGACY_PROMPT]);
+  writeGenerated(promptPath, systemPrompt(ask), [
+    systemPrompt(true),
+    systemPrompt(false),
+    systemPrompt(true, false),
+    systemPrompt(false, false),
+    systemPrompt(true, true, false),
+    systemPrompt(false, true, false),
+    systemPrompt(true, false, false),
+    systemPrompt(false, false, false),
+    LEGACY_PROMPT,
+  ]);
 }
 
 const AUTO_ALLOW = ["read", "bash", "edit", "write"];
 
-function systemPrompt(ask: boolean, shared = true): string {
+function systemPrompt(ask: boolean, shared = true, files = true): string {
   return [
     "You are being used through a Discord chat.",
     "",
@@ -147,6 +157,12 @@ function systemPrompt(ask: boolean, shared = true): string {
     "- Only your final message is shown; tool calls and in-between text are hidden.",
     "  Make it a complete answer: what you did, the result, and any PR,",
     "  commit or file the user should look at.",
+    ...(files
+      ? [
+          "- Files you write in the work folder (HTML, images, PDF, Markdown, CSV, ...)",
+          "  are attached to your answer automatically; name them, don't paste them.",
+        ]
+      : []),
     ...(ask
       ? ["- bash, edit and write need the user's approval via a button;", "  if a call is denied, ask what they want instead of retrying."]
       : []),

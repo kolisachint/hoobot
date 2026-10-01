@@ -17,6 +17,7 @@ import { code, describeTool, splitMessage, truncate } from "./format.ts";
 import { CodexClient, RpcError, userInput, type Notification, type RequestId, type ServerRequest } from "./codex-client.ts";
 import type { LinkStore } from "./links.ts";
 import { TurnSummary } from "./summary.ts";
+import { changedSince, pathsInText, pickAttachments, type Attachment } from "./attachments.ts";
 
 /** The bits of a Discord thread this file uses (tests pass a fake). */
 export interface ThreadLike {
@@ -66,7 +67,7 @@ export class ThreadSession {
     private readonly client: CodexClient,
     private readonly links: LinkStore,
     private onClose: (threadId: string) => void,
-    /** The folder this thread works in (for `!status`). */
+    /** The folder this thread works in (for `!status`, and files to attach). */
     readonly workdir = config.workdir,
   ) {
     client.on("notification", this.onNotification);
@@ -432,6 +433,20 @@ export class ThreadSession {
     this.caller = null;
 
     const footer = status?.summary.footer(this.model) ?? "";
+    // Files the model wrote, named in its answer, or that changed in the work
+    // folder during the turn (shell output) go back as attachments.
+    const { files, skipped } =
+      turn.status === "completed" && status
+        ? pickAttachments(
+            [
+              ...status.summary.editedFiles,
+              ...pathsInText(answer ?? ""),
+              // Whole seconds: some filesystems store mtimes that coarse.
+              ...changedSince(this.workdir, Math.floor(status.summary.startedAt / 1000) * 1000),
+            ],
+            this.workdir,
+          )
+        : { files: [], skipped: [] };
     const parts: string[] = [];
     if (answer) parts.push(answer);
     if (turn.status === "failed") {
@@ -445,9 +460,14 @@ export class ThreadSession {
       if (footer && chunks[last]!.length + footer.length + 1 <= 2000) chunks[last] += `\n${footer}`;
       else if (footer) chunks.push(footer);
       // The first chunk is a Discord reply to the message that asked.
-      for (const [i, chunk] of chunks.entries()) await this.post(chunk, i === 0 ? caller : null);
+      for (const [i, chunk] of chunks.entries()) await this.post(chunk, i === 0 ? caller : null, i === chunks.length - 1 ? files : []);
     } else if (footer && !this.verbose && turn.status !== "interrupted") {
-      await this.post(footer, caller);
+      await this.post(footer, caller, files);
+    } else if (files.length) {
+      await this.post("Files:", caller, files);
+    }
+    if (skipped.length) {
+      await this.post(`-# Not attached (over Discord's 10 files / 10 MB): ${skipped.map((s) => code(s)).join(", ")}`);
     }
     // Queued after any in-flight status send, so that message exists by now.
     if (status) await this.enqueue(async () => status.msg?.delete()).catch(() => {});
@@ -571,13 +591,23 @@ export class ThreadSession {
   // ── Helpers ────────────────────────────────────────────────────────────────
 
   /** `replyTo`: post as a Discord reply to that message (no ping); plain send if it's gone. */
-  private post(text: string, replyTo?: { id: string } | null) {
+  private post(text: string, replyTo?: { id: string } | null, files: Attachment[] = []) {
     if (!text.trim()) return Promise.resolve();
+    const message = (withFiles: boolean) => ({
+      content: text,
+      ...(replyTo ? { reply: { messageReference: replyTo.id, failIfNotExists: false }, allowedMentions: { repliedUser: false } } : {}),
+      ...(withFiles ? { files } : {}),
+    });
     const send = () =>
-      replyTo
-        ? this.thread
-            .send({ content: text, reply: { messageReference: replyTo.id, failIfNotExists: false }, allowedMentions: { repliedUser: false } })
-        : this.thread.send(text);
+      !replyTo && !files.length
+        ? this.thread.send(text)
+        : this.thread.send(message(files.length > 0)).catch(async (err: unknown) => {
+            if (!files.length) throw err;
+            // e.g. over this server's upload limit: still post the text.
+            console.error(`[${this.thread.id}] upload failed`, err);
+            await this.thread.send(message(false));
+            return this.thread.send(`-# Couldn't attach ${files.map((f) => code(f.name)).join(", ")}: ${errorText(err)}`);
+          });
     return this.enqueue(send).catch((err) => console.error(`[${this.thread.id}] send failed`, err));
   }
 
