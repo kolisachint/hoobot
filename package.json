@@ -1,5 +1,5 @@
 {
-  "name": "hoo-discord-bot",
+  "name": "@kolisachint/hoobot",
   "version": "0.0.2",
   "description": "Use hoocode from Discord: a Discord bot that talks the Codex app-server protocol",
   "type": "module",
@@ -36,7 +36,7 @@
     "start": "bun src/index.ts",
     "dev": "bun --watch src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test test/format.test.ts",
+    "test": "bun test test/format.test.ts test/codex-client.test.ts",
     "check": "bun run typecheck && bun run test"
   }
 }

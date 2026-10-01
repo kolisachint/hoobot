@@ -43,18 +43,45 @@ export class CodexClient extends EventEmitter {
     super();
   }
 
-  /** Connect and run the `initialize` handshake. */
+  /**
+   * Connect and run the `initialize` handshake. Fails after
+   * `initializeTimeoutMs` if the server never answers (e.g. a hoocode
+   * build without `app-server`, which just sits on stdin).
+   */
   static async connect(
     endpoint: string,
     clientInfo = { name: "hoobot", version: "0.1.0" },
-    options: { cwd?: string } = {},
+    options: { cwd?: string; initializeTimeoutMs?: number } = {},
   ): Promise<CodexClient> {
     const client = new CodexClient(endpoint);
     await client.open(options.cwd);
-    await client.request("initialize", {
-      clientInfo,
-      capabilities: { experimentalApi: true },
-    });
+    const timeoutMs = options.initializeTimeoutMs ?? 15_000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        client.request("initialize", {
+          clientInfo,
+          capabilities: { experimentalApi: true },
+        }),
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                new Error(
+                  `app-server at ${endpoint} did not answer initialize within ${timeoutMs / 1000}s. ` +
+                    "Does this hoocode build support `app-server`? Set HOOCODE_BIN or APP_SERVER in .env.",
+                ),
+              ),
+            timeoutMs,
+          );
+        }),
+      ]);
+    } catch (err) {
+      client.close();
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
     client.notify("initialized");
     return client;
   }

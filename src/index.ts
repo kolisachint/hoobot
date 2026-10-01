@@ -51,6 +51,7 @@ function appServer(): Promise<CodexClient> {
     });
     return client;
   })().catch((err) => {
+    console.error(`Can't reach app-server: ${err instanceof Error ? err.message : String(err)}`);
     app = null;
     throw err;
   });
