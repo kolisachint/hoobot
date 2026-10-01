@@ -1,0 +1,39 @@
+name: Release label
+
+# At most one npm:patch / npm:minor / npm:major label per PR.
+# The label decides the version bump when the PR merges (see release.yml).
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  release-label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check npm:* labels
+        env:
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          NPM=$(echo "$LABELS" | jq -r '[.[] | select(startswith("npm:"))] | join(" ")')
+          COUNT=$(echo "$NPM" | wc -w)
+          if [ "$COUNT" -gt 1 ]; then
+            echo "::error::Only one npm:* label allowed, found: $NPM"
+            exit 1
+          fi
+          for L in $NPM; do
+            case "$L" in
+              npm:patch|npm:minor|npm:major) ;;
+              *) echo "::error::Unknown release label $L (use npm:patch, npm:minor or npm:major)"; exit 1 ;;
+            esac
+          done
+          if [ -z "$NPM" ]; then
+            echo "No npm:* label: merging will not release."
+            echo "No \`npm:*\` label: merging will **not** release." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Merging will release with $NPM."
+            echo "Merging will release with \`$NPM\`." >> "$GITHUB_STEP_SUMMARY"
+          fi

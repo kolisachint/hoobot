@@ -129,22 +129,38 @@ bun run check               # typecheck + unit tests
 
 ## Releasing
 
-CI (`.github/workflows/ci.yml`) typechecks and runs the unit tests on every PR.
-`.github/workflows/release.yml` runs on every push to `main`: if the
-`version` in `package.json` has not been released yet, it tags `vX.Y.Z`,
-creates the GitHub release and publishes to npm (`NPM_TOKEN` secret). If the
-version is unchanged, nothing is released.
+Releases are driven by PR labels. `package.json`'s `version` is owned by CI;
+don't edit it by hand.
+
+| Label | On merge |
+|---|---|
+| `npm:patch` | 0.1.0 → 0.1.1 |
+| `npm:minor` | 0.1.0 → 0.2.0 |
+| `npm:major` | 0.1.0 → 1.0.0 |
+| none | no release |
+
+- `.github/workflows/ci.yml`: typecheck, unit tests and `npm pack --dry-run`
+  on every PR and on `main`.
+- `.github/workflows/pr-labels.yml`: fails a PR with more than one `npm:*`
+  label.
+- `.github/workflows/release.yml`: on merge to `main`, reads the merged PR's
+  label, bumps `package.json`, pushes `chore(release): vX.Y.Z` plus the tag
+  `vX.Y.Z` to `main`, creates the GitHub release, publishes to npm
+  (`NPM_TOKEN` secret) and comments on the PR. It can also be run by hand
+  (Actions → Release → Run workflow, pick a bump).
+
+Workflow:
 
 1. `/pr minor` (or `patch` / `major`; plain `/pr` for no release): branches,
-   bumps the version, runs `bun run check`, commits everything, pushes and
-   opens the PR.
+   runs `bun run check`, commits everything, pushes, opens the PR and
+   labels it `npm:minor`.
 2. Merge the PR on GitHub.
 3. `/postmerge`: waits for the release workflow, checks the tag, GitHub
    release and npm version, then switches to `main`, pulls and deletes the
    merged branch.
 
 The commands live in `.cortexcode/prompts/`. `NPM_TOKEN` must be an npm
-*Automation* (or granular publish) token. The workflow asks for
-`contents: write` itself, so the repo's default read-only Actions
-permission is fine. If a release half-fails, re-run it: every step is
-skipped when already done.
+*Automation* (or granular publish) token. The bot pushes the release commit
+straight to `main`, so if you add branch protection, let GitHub Actions
+bypass it. If a release half-fails, re-run it: the release commit records
+`Release-PR: #N`, so a re-run finishes that version instead of bumping again.
