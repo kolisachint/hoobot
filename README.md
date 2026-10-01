@@ -24,7 +24,7 @@ cd workspace && hoocode app-server --listen unix://   # prints the socket path
 Needs [Bun](https://bun.sh). The bot reads `.env` from the folder you start it in.
 
 ```sh
-bun add -g hoo-discord-bot
+bun add -g @kolisachint/hoobot
 curl -o .env https://raw.githubusercontent.com/kolisachint/hoobot/main/.env.example   # then fill it in
 hoo-discord-bot
 ```

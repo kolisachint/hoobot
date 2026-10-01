@@ -41,6 +41,6 @@ Do these steps in order. Stop and report if any step fails; do not work around a
      `gh label create npm:minor --color FBCA04 --description "Release: minor bump on merge" --force`
      `gh label create npm:major --color D93F0B --description "Release: major bump on merge" --force`
    - Remove any other `npm:*` label from the PR (`gh pr edit <n> --remove-label npm:<other>`), then `gh pr edit <n> --add-label npm:<bump>`. A PR carries at most one `npm:*` label.
-   - Preview the version: the current `version` on `origin/main` and the latest on npm (`npm view hoo-discord-bot version`; a 404 means never published). Work out what the bump will give from `origin/main`'s version and show it as "expected vX.Y.Z".
+   - Preview the version: the current `version` on `origin/main` and the latest on npm (`npm view @kolisachint/hoobot version`; a 404 means never published). Work out what the bump will give from `origin/main`'s version and show it as "expected vX.Y.Z".
 
 10. **Report.** Print the branch, the commit, the PR URL, the release label and expected version (or "no release"), and `gh pr checks` (they may still be pending; do not wait). Remind the user to run `/postmerge` after merging.
