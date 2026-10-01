@@ -1,6 +1,6 @@
 {
   "name": "@kolisachint/hoobot",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "Use hoocode from Discord: a Discord bot that talks the Codex app-server protocol",
   "type": "module",
   "license": "MIT",
