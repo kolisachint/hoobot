@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run hoo-discord-bot as a macOS background service (launchd).
+# Run hoobot as a macOS background service (launchd).
 #
 #   scripts/service.sh install    start now + at every login, restart on crash
 #   scripts/service.sh uninstall  stop and remove the service
@@ -8,10 +8,13 @@
 #   scripts/service.sh logs       follow the log
 set -eu
 
-LABEL="com.hoo.discord-bot"
+LABEL="com.hoo.hoobot"
+# Before the rename the service was com.hoo.discord-bot; install and
+# uninstall remove it so two bots never run at once.
+OLD_LABEL="com.hoo.discord-bot"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/hoo-discord-bot"
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/hoobot"
 LOG="$LOG_DIR/bot.log"
 DOMAIN="gui/$(id -u)"
 
@@ -58,8 +61,21 @@ EOF
 
 is_loaded() { launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; }
 
+remove_old() {
+  old_plist="$HOME/Library/LaunchAgents/$OLD_LABEL.plist"
+  if launchctl print "$DOMAIN/$OLD_LABEL" >/dev/null 2>&1; then
+    launchctl bootout "$DOMAIN/$OLD_LABEL" 2>/dev/null || true
+    echo "Stopped old service $OLD_LABEL."
+  fi
+  if [ -f "$old_plist" ]; then
+    rm -f "$old_plist"
+    echo "Removed $old_plist."
+  fi
+}
+
 case "${1:-}" in
   install)
+    remove_old
     write_plist
     is_loaded && launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
     launchctl bootstrap "$DOMAIN" "$PLIST"
@@ -68,6 +84,7 @@ case "${1:-}" in
     echo "  Log:     $LOG"
     ;;
   uninstall)
+    remove_old
     is_loaded && launchctl bootout "$DOMAIN/$LABEL" || true
     rm -f "$PLIST"
     echo "Stopped and removed. (Log kept at $LOG)"

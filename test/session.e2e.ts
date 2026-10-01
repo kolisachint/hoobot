@@ -10,6 +10,8 @@ import { mkdirSync, rmSync } from "node:fs";
 
 process.env.DISCORD_TOKEN ??= "x";
 process.env.ALLOWED_USER_IDS ??= "1";
+// This test checks the approval buttons, so make the workspace ask.
+process.env.APPROVALS = "ask";
 // Bun loads .env first; never run in the bot's real folder or link store.
 process.env.HOO_WORKDIR = process.env.E2E_WORKDIR ?? "/tmp/hoo-bot-e2e";
 process.env.LINKS_FILE = "/tmp/hoo-bot-e2e-links.json";
@@ -29,6 +31,7 @@ const log: string[] = [];
 let clicks = 0;
 const fakeMsg = () => ({
   edit: async (c: any) => void log.push(`EDIT  ${typeof c === "string" ? c : c.content}`),
+  delete: async () => void log.push("DELETE"),
   awaitMessageComponent: async () => {
     clicks++;
     return {

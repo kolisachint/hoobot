@@ -5,7 +5,13 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-export type Link = { threadId: string };
+export type Link = {
+  threadId: string;
+  /** Model picked with `!model` for this space; sent on every turn. */
+  model?: string;
+  /** Last Discord message this conversation has read (context starts after it). */
+  seen?: string;
+};
 
 export class LinkStore {
   private links: Record<string, Link> = {};
