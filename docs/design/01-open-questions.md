@@ -23,6 +23,25 @@ hoocode. Docs 10–15 were revised in place.
 
 ## Architecture review ✅ decided: B+ → [17-architecture-review.md](17-architecture-review.md)
 
+## Current step ✅ decided → [18-current-step.md](18-current-step.md)
+
+Rust hoocode only, MIT only, hoobot stays on `--mode rpc`. B+ waits.
+
+## T7 — Before B+ resumes (from 18)
+
+To settle before the app-server work starts:
+
+1. Do stock Codex clients (CLI, IDE) stay a goal? This sets how much of the
+   protocol `cortexcode-app-server-protocol` covers.
+2. May we read Codex's Rust source for behaviour, or only its docs and
+   recorded messages?
+3. Does "MIT only" cover dependencies? Can we take "MIT OR Apache-2.0"
+   crates as MIT, and what about Apache-only ones?
+4. Does hoobot stay TypeScript on Bun, or move to Rust and use the
+   protocol crate?
+5. hoocode RPC approvals: mark warm subagent workers as "no prompts" with an
+   internal env var or a CLI flag? (hoocode `docs/design/rpc-approvals.md`)
+
 ## Remaining detail questions
 
 Collected from the "Still open" sections of each doc.
@@ -38,3 +57,4 @@ Collected from the "Still open" sections of each doc.
 | 15 | Default bot; logs; adapter tests; where the menu-bar app lives |
 | 17 | Daemon crash: how clients learn a turn was interrupted; restart policy |
 | 17 | How policy in core surfaces approvals in the terminal UI vs the server |
+| 18 | See T7 above |
