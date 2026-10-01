@@ -22,6 +22,11 @@ export class TurnSummary {
     this.startedAt = now;
   }
 
+  /** Paths of files edited or written this turn, in order. */
+  get editedFiles(): string[] {
+    return [...this.files];
+  }
+
   /** An `item/started` item. */
   started(item: any) {
     const what = stepLabel(item);

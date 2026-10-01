@@ -36,7 +36,7 @@
     "start": "bun src/index.ts",
     "dev": "bun --watch src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test test/format.test.ts test/codex-client.test.ts test/summary.test.ts test/session.test.ts test/config.test.ts test/context.test.ts",
+    "test": "bun test test/format.test.ts test/codex-client.test.ts test/summary.test.ts test/session.test.ts test/config.test.ts test/context.test.ts test/attachments.test.ts test/inbound.test.ts",
     "check": "bun run typecheck && bun run test"
   }
 }

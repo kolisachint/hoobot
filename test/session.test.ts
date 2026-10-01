@@ -189,3 +189,68 @@ test("the answer replies to the caller; the read position is saved and survives 
   expect(await s.readState()).toEqual({ linked: false, seen: null });
   s.close();
 });
+
+test("files written this turn are attached to the answer", async () => {
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "hoobot-session-att-"));
+  writeFileSync(join(dir, "page.html"), "<h1>hi</h1>");
+  writeFileSync(join(dir, "app.ts"), "x");
+  const server = new FakeServer();
+  const thread: any = fakeThread();
+  const uploads: string[][] = [];
+  const plainSend = thread.send;
+  thread.send = async (c: any) => {
+    if (c?.files) uploads.push(c.files.map((f: any) => f.name));
+    return plainSend(c);
+  };
+  const s = new ThreadSession(thread, server as any, new LinkStore(linksPath("att")), () => {}, dir);
+  await s.prompt("make a page");
+  for (const path of ["page.html", "app.ts"]) {
+    server.notify("item/completed", {
+      item: { type: "dynamicToolCall", id: path, tool: "write", arguments: { path }, success: true, status: "completed" },
+    });
+  }
+  server.notify("item/completed", { item: { type: "agentMessage", id: "m", text: "Wrote page.html." } });
+  server.notify("turn/completed", { turn: { id: "u1", status: "completed" } });
+  await tick();
+  s.close();
+  expect(uploads).toEqual([["page.html"]]);
+  expect(thread.sent.at(-1)).toStartWith("Wrote page.html.");
+});
+
+test("a real-shaped fileChange and a file written by a shell command are both attached", async () => {
+  const { mkdtempSync, writeFileSync, utimesSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "hoobot-session-fc-"));
+  writeFileSync(join(dir, "old.html"), "old");
+  const old = Date.now() / 1000 - 3600;
+  utimesSync(join(dir, "old.html"), old, old);
+  const server = new FakeServer();
+  const thread: any = fakeThread();
+  const uploads: string[][] = [];
+  const plainSend = thread.send;
+  thread.send = async (c: any) => {
+    if (c?.files) uploads.push(c.files.map((f: any) => f.name));
+    return plainSend(c);
+  };
+  const s = new ThreadSession(thread, server as any, new LinkStore(linksPath("fc")), () => {}, dir);
+  await s.prompt("make pages");
+  // hoocode's `write` → fileChange with an absolute path (items.rs).
+  writeFileSync(join(dir, "index.html"), "<h1>hi</h1>");
+  server.notify("item/completed", {
+    item: { type: "fileChange", id: "f", status: "completed", changes: [{ path: join(dir, "index.html"), kind: { type: "add" }, diff: "" }] },
+  });
+  // A shell command writes another file; the answer doesn't name it.
+  writeFileSync(join(dir, "chart.svg"), "<svg/>");
+  server.notify("item/completed", {
+    item: { type: "commandExecution", id: "c", command: "python gen.py", status: "completed", exitCode: 0, aggregatedOutput: "" },
+  });
+  server.notify("item/completed", { item: { type: "agentMessage", id: "m", text: "Done, see the files." } });
+  server.notify("turn/completed", { turn: { id: "u1", status: "completed" } });
+  await tick();
+  s.close();
+  expect(uploads).toEqual([["index.html", "chart.svg"]]);
+});

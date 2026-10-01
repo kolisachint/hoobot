@@ -106,13 +106,25 @@ work together. Each has its own hoocode conversation, model and settings.
   line is removed and only the final answer is posted, with a short footer:
   PR link, commit, files edited, steps, time and model.
   `!verbose` shows every step and in-between message instead.
+- **Files:** files it writes in the work folder (`.html`, images, `.pdf`,
+  `.md`, `.txt`, `.csv`, `.json`, Office files, `.zip`), creates with a shell
+  command, or names in its answer are attached to the answer. Source code isn't; nothing outside the work
+  folder is. Up to 10 files and ~9.5 MB per answer. HTML arrives as a
+  download; Discord doesn't render it.
+- **Sending files:** files on the message that calls it, and on the message
+  it replies to, are saved in the work folder under
+  `.discord/<channel>/<message>/` and the prompt says where they are, so it
+  can read, run or edit them. Text files up to 32 KB are pasted into the
+  prompt too; images are also shown to the model as images. Up to 25 MB a
+  file. `.discord/` is git-ignored, cleared by `!new`, and files are deleted
+  after 7 days. Files in other people's earlier messages are only named.
 
 ### Commands (in a channel or thread, after the mention)
 
 | Command | What it does |
 |---|---|
 | `!stop` | Stop the current run |
-| `!new` | Start a fresh conversation here, for everyone |
+| `!new` | Start a fresh conversation here, for everyone (deletes files sent here) |
 | `!status` | Model, busy or not, folder, thread, server |
 | `!model` | Pick this space's model from a dropdown |
 | `!model <part of name>` | Pick it directly, e.g. `!model kimi` |
@@ -147,6 +159,8 @@ the thread; the first answer wins and the others see it resolved.
 | `src/session.ts` | One app-server thread per channel or thread; notifications → messages, buttons → approvals |
 | `src/codex-client.ts` | Codex app-server client (`unix://` WebSocket or `stdio:`) |
 | `src/links.ts` | Channel/thread → app-server thread, model, last read message (`LINKS_FILE`) |
+| `src/attachments.ts` | Picks written files to attach to the answer |
+| `src/inbound.ts` | Saves files sent on Discord into the work folder for the prompt |
 | `src/format.ts` | Splits long replies to fit Discord's 2000-character limit |
 | `workspace/` | hoocode's working folder (git-ignored); sessions are saved by hoocode |
 
@@ -155,6 +169,8 @@ the thread; the first answer wins and the others see it resolved.
 ```sh
 bun run test                # message splitting (what CI runs)
 bun test/session.e2e.ts     # real app-server, fake Discord (uses API credits)
+bun test/attachments.e2e.ts # real app-server writes files; checks they're attached
+bun test/inbound.e2e.ts     # files sent to it reach a real app-server
 APP_SERVER="stdio:codex app-server" bun test/session.e2e.ts   # same, real Codex
 bun run typecheck
 bun run check               # typecheck + unit tests
