@@ -1,6 +1,8 @@
 # hoobot design
 
 Status: **architecture locked (B+, 2026-09-30), not started**. No code has changed.
+**Current step (2026-10-01):** hoobot on Rust hoocode over `--mode rpc`, MIT only;
+B+ waits. See [18-current-step.md](18-current-step.md).
 
 ## Summary
 
@@ -49,6 +51,7 @@ The Markdown files are the source of truth.
 | 15 | [15-scope-roadmap.md](15-scope-roadmap.md) | Scope + roadmap | revised |
 | 16 | [16-roles.md](16-roles.md) | **Roles: hoocode vs hoobot** | decided |
 | 17 | [17-architecture-review.md](17-architecture-review.md) | **Options A–F, why B+** | decided |
+| 18 | [18-current-step.md](18-current-step.md) | **Current step: Rust hoocode, MIT only** | decided |
 
 ## Decision log
 
@@ -86,7 +89,7 @@ Superseded rows are kept and struck through, with the row that replaces them.
 | **Rethink** | | |
 | 2026-09-30 | R1: `hoocode app-server` is a full server (socket + WS, many clients, fan-out). No hub | Codex already does this; clear roles |
 | 2026-09-30 | R2: hoocode = engine + server; hoobot = bots + surfaces | Anything useful without hoobot goes in hoocode |
-| 2026-09-30 | R3: copy only the Codex protocol (TS types + schemas), pinned; server written in TS | `../codex` is Rust; hoocode is TS; schemas are the contract |
+| 2026-09-30 | ~~R3: copy only the Codex protocol (TS types + schemas), pinned; server written in TS~~ → R19, R20 | `../codex` is Rust; hoocode is TS; schemas are the contract |
 | 2026-09-30 | R4: grants and always-allow rules enforced in hoocode | Same safety for every client, including stock Codex |
 | 2026-09-30 | R5: hoocode gets a general "profile" concept | A persona is useful without hoobot |
 | 2026-09-30 | R6: hoocode server = supervisor + worker per (profile, workspace) | Crash isolation, per-folder cwd |
@@ -106,3 +109,8 @@ Superseded rows are kept and struck through, with the row that replaces them.
 | 2026-09-30 | R18 (later): the hoocode terminal UI becomes a daemon client | Open a bot's thread live in the terminal |
 | 2026-09-30 | Build order stays R13: daemon and policy before the Discord port | Chosen by owner |
 | 2026-09-30 | Fallback if B is too heavy: A′ (move the daemon into hoobot) | Codex protocol on both sides, so the move is cheap |
+| **Current step** | | |
+| 2026-10-01 | R19: hoocode is the Rust build; TS hoocode is ignored | hoocode is Rust only now |
+| 2026-10-01 | R20: MIT only. Nothing copied from Codex; own `cortexcode-app-server-protocol` crate; server in Rust; Codex schemas only at test time | Codex is Apache-2.0 |
+| 2026-10-01 | R21: first step is hoobot on Rust `hoocode --mode rpc`; app-server, profiles, Slack wait | Smallest change that keeps hoobot working |
+| 2026-10-01 | R22: blocker: RPC approval dialogs in hoocode (outside the migration); no interim workaround | Rust RPC mode runs gated tools without asking |
