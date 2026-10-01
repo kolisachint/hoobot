@@ -7,8 +7,10 @@ import { dirname } from "node:path";
 
 export type Link = {
   threadId: string;
-  /** Model picked with `!model` for this Discord thread; sent on every turn. */
+  /** Model picked with `!model` for this space; sent on every turn. */
   model?: string;
+  /** Last Discord message this conversation has read (context starts after it). */
+  seen?: string;
 };
 
 export class LinkStore {

@@ -160,3 +160,32 @@ test("!model kimi with two matches shows a dropdown of just those", async () => 
   expect(thread.menus[0].options.map((o: any) => o.value)).toEqual(["go/kimi-k2", "go/kimi-k3"]);
   expect(thread.sent.at(-1)).toContain("(not changed)");
 });
+
+test("the answer replies to the caller; the read position is saved and survives a restart", async () => {
+  const server = new FakeServer();
+  const replies: any[] = [];
+  const thread: any = fakeThread();
+  const plainSend = thread.send;
+  thread.send = async (c: any) => {
+    if (c?.reply) replies.push(c.reply.messageReference);
+    return plainSend(c);
+  };
+  const path = linksPath("seen");
+  let s = new ThreadSession(thread, server as any, new LinkStore(path), () => {});
+  expect(await s.readState()).toEqual({ linked: false, seen: null });
+  expect(await s.prompt("alice: hi", [], { id: "555" })).toBe(true);
+  s.markSeen("555");
+  server.notify("item/completed", { item: { type: "agentMessage", id: "m", text: "hello" } });
+  server.notify("turn/completed", { turn: { id: "u1", status: "completed" } });
+  await tick();
+  s.close();
+  expect(replies).toEqual(["555"]);
+
+  s = new ThreadSession(thread, server as any, new LinkStore(path), () => {});
+  expect(await s.readState()).toEqual({ linked: true, seen: "555" });
+  s.markSeen("100"); // older: ignored
+  expect(await s.readState()).toEqual({ linked: true, seen: "555" });
+  await s.newSession(); // fresh conversation: read from scratch
+  expect(await s.readState()).toEqual({ linked: false, seen: null });
+  s.close();
+});

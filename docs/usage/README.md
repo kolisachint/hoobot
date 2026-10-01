@@ -19,8 +19,9 @@ check that a swap worked.
 
 **hoobot is only glue.** It:
 
-- captures Discord messages (mentions, thread replies, `!` commands, button clicks);
-- maps each Discord thread to one app-server thread (`src/links.ts`, stored
+- captures Discord messages (mentions, replies to it, `!` commands, button clicks)
+  and what others said since it last read a channel or thread (`src/context.ts`);
+- maps each Discord channel or thread to one app-server thread (`src/links.ts`, stored
   in `LINKS_FILE`);
 - turns server notifications into one status line and a final answer with a
   footer (`src/session.ts`, `src/summary.ts`), and approval requests into
@@ -60,8 +61,8 @@ bun start                 # prints "Connected to app-server ..." and "Logged in 
 
 In Discord:
 
-- `@hoo list the files here`: opens a thread and starts a turn.
-- Type in the thread to continue; type while it is busy to steer.
+- `@hoo list the files here`: starts a turn and answers in place.
+- Mention it or reply to it to continue; doing so while it is busy steers.
 - `!status` shows model, busy, thread id and **which server** (`Server:` line).
 - `!stop`, `!new`, `!model [part of name]`, `!verbose`, `!help`.
 - `!model` uses `model/list`. hoocode marks models outside your
@@ -223,16 +224,28 @@ LIVE_CHANNEL_ID=<channel id> bun test/live.ts
 Creates a thread, asks for a reply without tools, and exits 0 when
 `hoo-bot live test OK` shows up.
 
+Context across messages (others talk, the bot reads only what's new):
+
+```sh
+LIVE_CHANNEL_ID=<channel id> bun test/live-context.ts
+```
+
+Prints five `ok` lines: first call reads others' messages, the answer
+replies to the caller, the next call gets only new messages, and so on.
+
 **5. By hand in Discord**
 
 | Step | Expect |
 |---|---|
-| `@hoo say hi` | a new thread with a reply |
+| `@hoo say hi` | a reply to your message, in the channel |
+| others chat, then `@hoo summarise the above` | it knows what they said (names included) |
+| reply to the bot's message without a mention | it answers |
+| open a thread, `@hoo` in it | it knows the channel messages before the thread |
 | `!status` | `Server:` is the endpoint you swapped to |
 | ask it to run `echo hi` | `APPROVALS=auto`: runs, final answer with a `-# 1 step · …` footer. `ask`: **Allow once / Deny** buttons first |
 | a task over ~4 s | one `⏳ Working · …` line, removed when the answer arrives |
 | `!verbose`, then a task | every step and in-between message is shown |
-| type while it is busy | the run is steered, not queued |
+| call it while it is busy | the run is steered, not queued |
 | `!stop` | the run stops |
-| restart the bot, then type in the same thread | the conversation continues (same `Thread:` in `!status`) |
+| restart the bot, then call it in the same place | the conversation continues (same `Thread:` in `!status`) |
 | example 3 only: open the thread in `codex --remote` | the same history; an approval answered in one place resolves in the other |

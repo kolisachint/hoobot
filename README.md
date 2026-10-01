@@ -6,7 +6,7 @@ Use **hoocode** from Discord.
 Discord  ⇄  this bot (Bun + discord.js)  ⇄  Codex app-server protocol  ⇄  hoocode app-server
 ```
 
-Each Discord thread is one app-server thread. The bot speaks only standard
+Each Discord channel or thread is one shared app-server thread. The bot speaks only standard
 Codex app-server methods, so the server is swappable: `hoocode app-server`
 (default), or the real `codex app-server`, set with `APP_SERVER` in `.env`.
 By default the bot starts `hoocode app-server` itself, in `HOO_WORKDIR`.
@@ -75,34 +75,48 @@ The Mac must be awake and logged in for the bot to answer.
 
 ## Using it
 
-- **Start:** in any channel, mention the bot with a request,
-  e.g. `@hoo list the files here`. It opens a thread.
-- **Continue:** type in that thread. No mention needed.
-- **Steer:** typing while it's busy redirects the current run.
-- **Model per thread:** `!model` lists hoocode's scoped models (your
+Every channel and every thread is a shared space where people and the bot
+work together. Each has its own hoocode conversation, model and settings.
+
+- **Call it:** mention the bot (`@hoo fix what we discussed above`) or
+  reply to one of its messages. Only `ALLOWED_USER_IDS` can call it.
+  It answers right there, as a reply to your message.
+- **Context:** when called, it reads everyone's messages in that space
+  since it last looked (up to 30, ~12k characters, newest kept), with
+  names, as background. The first call reads the last 30. It never sends
+  a message twice; messages sent while it was offline go with the next call.
+  Replying to someone's message includes that message too.
+- **Threads:** open a Discord thread for a side task. It gets its own
+  conversation in the same folder; its first call also reads the channel
+  messages that led up to it. Results stay in the thread.
+- **Steer:** calling it while it's busy redirects the current run.
+- **Needs** the **Read Message History** permission in those channels;
+  without it, it works with no context (and logs why).
+- **Model per space:** `!model` lists hoocode's scoped models (your
   `enabledModels`, set with the model picker in the hoocode TUI). The pick
   applies from the next message, the conversation carries on, and it is
   remembered across bot restarts. `!model <part of name>` also finds models
   outside the scope.
 - **One folder per channel:** set `WORKSPACES=<channel id>=<folder>,...`.
-  Threads in that channel work in that folder, with its own hoocode
-  app-server. Other channels use `HOO_WORKDIR`.
+  That channel and its threads work in that folder, with its own hoocode
+  app-server. Two runs in one folder (channel and a thread) are allowed;
+  coordinate as you would with two developers. Other channels use `HOO_WORKDIR`.
 - **Output:** while it works you see one status line
   (`⏳ Working · 4 steps · 1m 20s · bash ...`). When it's done the status
   line is removed and only the final answer is posted, with a short footer:
   PR link, commit, files edited, steps, time and model.
   `!verbose` shows every step and in-between message instead.
 
-### Commands (inside a thread)
+### Commands (in a channel or thread, after the mention)
 
 | Command | What it does |
 |---|---|
 | `!stop` | Stop the current run |
-| `!new` | Forget the conversation |
-| `!status` | Model, busy or not, thread, server |
-| `!model` | Pick this thread's model from a dropdown |
+| `!new` | Start a fresh conversation here, for everyone |
+| `!status` | Model, busy or not, folder, thread, server |
+| `!model` | Pick this space's model from a dropdown |
 | `!model <part of name>` | Pick it directly, e.g. `!model kimi` |
-| `!verbose` | Show every step in this thread (again to turn off) |
+| `!verbose` | Show every step here (again to turn off) |
 | `!help` | Show help |
 
 ## Safety
@@ -128,10 +142,11 @@ the thread; the first answer wins and the others see it resolved.
 
 | Path | Purpose |
 |---|---|
-| `src/index.ts` | Discord side: mentions, threads, commands |
-| `src/session.ts` | One app-server thread per Discord thread; notifications → messages, buttons → approvals |
+| `src/index.ts` | Discord side: who can call it, spaces, commands |
+| `src/context.ts` | What people said since the bot last read a space |
+| `src/session.ts` | One app-server thread per channel or thread; notifications → messages, buttons → approvals |
 | `src/codex-client.ts` | Codex app-server client (`unix://` WebSocket or `stdio:`) |
-| `src/links.ts` | Discord thread → app-server thread links (`LINKS_FILE`) |
+| `src/links.ts` | Channel/thread → app-server thread, model, last read message (`LINKS_FILE`) |
 | `src/format.ts` | Splits long replies to fit Discord's 2000-character limit |
 | `workspace/` | hoocode's working folder (git-ignored); sessions are saved by hoocode |
 

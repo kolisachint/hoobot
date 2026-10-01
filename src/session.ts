@@ -1,5 +1,5 @@
 /**
- * One Discord thread ⇄ one app-server thread. Translates Codex app-server
+ * One Discord space (a channel or a thread) ⇄ one app-server thread. Translates Codex app-server
  * notifications into Discord messages and approval requests into buttons.
  * Uses only standard Codex methods, so it works against `hoocode app-server`
  * and the real `codex app-server` alike.
@@ -50,6 +50,12 @@ export class ThreadSession {
   private model: string | null = null;
   /** The model picked for this Discord thread (`!model`), saved in the link. */
   private chosenModel: string | null = null;
+  /** Last Discord message the conversation has read; saved in the link. */
+  private seenId: string | null = null;
+  /** Whether the space had a conversation before this session opened. */
+  private wasLinked = false;
+  /** The message that started the running turn; the answer replies to it. */
+  private caller: { id: string } | null = null;
   /** Serialises Discord sends so replies stay in order. */
   private queue: Promise<unknown> = Promise.resolve();
   private ready: Promise<void> | null = null;
@@ -82,6 +88,8 @@ export class ThreadSession {
     this.ready ??= (async () => {
       const link = this.links.get(this.linkKey);
       this.chosenModel = link?.model ?? null;
+      this.seenId = link?.seen ?? null;
+      this.wasLinked = !!link;
       if (link) {
         try {
           const res = await this.client.request("thread/resume", { threadId: link.threadId });
@@ -90,6 +98,8 @@ export class ThreadSession {
         } catch (err) {
           console.error(`[${this.thread.id}] resume ${link.threadId} failed; starting fresh`, err);
           await this.post(`Couldn't reopen the earlier conversation (${code(errorText(err))}). Starting a new one.`);
+          this.seenId = null;
+          this.wasLinked = false;
         }
       }
       await this.startThread();
@@ -111,7 +121,25 @@ export class ThreadSession {
 
   private saveLink() {
     if (!this.threadId) return;
-    this.links.set(this.linkKey, { threadId: this.threadId, ...(this.chosenModel ? { model: this.chosenModel } : {}) });
+    this.links.set(this.linkKey, {
+      threadId: this.threadId,
+      ...(this.chosenModel ? { model: this.chosenModel } : {}),
+      ...(this.seenId ? { seen: this.seenId } : {}),
+    });
+  }
+
+  /** Read position for context: whether the space had a conversation, and its last read message. */
+  async readState(): Promise<{ linked: boolean; seen: string | null }> {
+    await this.ensureThread();
+    return { linked: this.wasLinked, seen: this.seenId };
+  }
+
+  /** Everything up to `messageId` has been sent to the conversation. */
+  markSeen(messageId: string) {
+    if (this.seenId && BigInt(this.seenId) >= BigInt(messageId)) return;
+    this.seenId = messageId;
+    this.wasLinked = true;
+    this.saveLink();
   }
 
   private adopt(res: any) {
@@ -125,7 +153,11 @@ export class ThreadSession {
 
   // ── Input from Discord ─────────────────────────────────────────────────────
 
-  async prompt(text: string, images: { data: string; mimeType: string }[] = []) {
+  /**
+   * `caller`: the Discord message this answers; the final answer replies to it.
+   * Resolves true when the server took the message (a new turn or a steer).
+   */
+  async prompt(text: string, images: { data: string; mimeType: string }[] = [], caller?: { id: string }): Promise<boolean> {
     this.touch();
     await this.ensureThread();
     const input = userInput(text, images);
@@ -134,7 +166,7 @@ export class ThreadSession {
       try {
         await this.client.request("turn/steer", { threadId: this.threadId, input, expectedTurnId: this.turnId });
         await this.post("Queued. It'll be read after the current step.");
-        return;
+        return true;
       } catch (err) {
         // The turn ended in the meantime: start a new one below.
         if (!(err instanceof RpcError)) throw err;
@@ -148,8 +180,11 @@ export class ThreadSession {
       const res = await this.client.request("turn/start", params);
       if (this.chosenModel) this.model = this.chosenModel;
       this.beginTurn(res.turn.id);
+      this.caller = caller ?? null;
+      return true;
     } catch (err) {
       await this.post(`**Not sent:** ${errorText(err)}`);
+      return false;
     }
   }
 
@@ -172,6 +207,9 @@ export class ThreadSession {
     }
     if (this.threadId) await this.client.request("thread/unsubscribe", { threadId: this.threadId }).catch(() => {});
     this.turnId = null;
+    // The new conversation knows nothing: the next call reads the last 30 again.
+    this.seenId = null;
+    this.wasLinked = false;
     this.ready = this.startThread();
     try {
       await this.ready;
@@ -390,6 +428,8 @@ export class ThreadSession {
     this.live = null;
     const answer = this.answer;
     this.answer = null;
+    const caller = this.caller;
+    this.caller = null;
 
     const footer = status?.summary.footer(this.model) ?? "";
     const parts: string[] = [];
@@ -404,9 +444,10 @@ export class ThreadSession {
       const last = chunks.length - 1;
       if (footer && chunks[last]!.length + footer.length + 1 <= 2000) chunks[last] += `\n${footer}`;
       else if (footer) chunks.push(footer);
-      for (const chunk of chunks) await this.post(chunk);
+      // The first chunk is a Discord reply to the message that asked.
+      for (const [i, chunk] of chunks.entries()) await this.post(chunk, i === 0 ? caller : null);
     } else if (footer && !this.verbose && turn.status !== "interrupted") {
-      await this.post(footer);
+      await this.post(footer, caller);
     }
     // Queued after any in-flight status send, so that message exists by now.
     if (status) await this.enqueue(async () => status.msg?.delete()).catch(() => {});
@@ -529,9 +570,15 @@ export class ThreadSession {
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
-  private post(text: string) {
+  /** `replyTo`: post as a Discord reply to that message (no ping); plain send if it's gone. */
+  private post(text: string, replyTo?: { id: string } | null) {
     if (!text.trim()) return Promise.resolve();
-    return this.enqueue(() => this.thread.send(text)).catch((err) => console.error(`[${this.thread.id}] send failed`, err));
+    const send = () =>
+      replyTo
+        ? this.thread
+            .send({ content: text, reply: { messageReference: replyTo.id, failIfNotExists: false }, allowedMentions: { repliedUser: false } })
+        : this.thread.send(text);
+    return this.enqueue(send).catch((err) => console.error(`[${this.thread.id}] send failed`, err));
   }
 
   private enqueue<T>(fn: () => Promise<T>): Promise<T> {
