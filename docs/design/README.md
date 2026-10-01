@@ -1,8 +1,9 @@
 # hoobot design
 
-Status: **architecture locked (B+, 2026-09-30), not started**. No code has changed.
-**Current step (2026-10-01):** hoobot on Rust hoocode over `--mode rpc`, MIT only;
-B+ waits. See [18-current-step.md](18-current-step.md).
+Status: **architecture locked (B+, 2026-09-30); first build in progress.**
+**Current step (2026-10-01, revised):** build a minimal `hoocode app-server`
+(stdio + Unix socket, fan-out), then port hoobot to it. See
+[18-current-step.md](18-current-step.md) and hoocode `docs/design/app-server.md`.
 
 ## Summary
 
@@ -113,4 +114,11 @@ Superseded rows are kept and struck through, with the row that replaces them.
 | 2026-10-01 | R19: hoocode is the Rust build; TS hoocode is ignored | hoocode is Rust only now |
 | 2026-10-01 | R20: MIT only. Nothing copied from Codex; own `cortexcode-app-server-protocol` crate; server in Rust; Codex schemas only at test time | Codex is Apache-2.0 |
 | 2026-10-01 | R21: first step is hoobot on Rust `hoocode --mode rpc`; app-server, profiles, Slack wait | Smallest change that keeps hoobot working |
-| 2026-10-01 | R22: blocker: RPC approval dialogs in hoocode (outside the migration); no interim workaround | Rust RPC mode runs gated tools without asking |
+| 2026-10-01 | ~~R22: blocker: RPC approval dialogs in hoocode (outside the migration); no interim workaround~~ → R23 | Rust RPC mode runs gated tools without asking |
+| **App-server resumes** | | |
+| 2026-10-01 | R23: build the app-server now; hoobot moves to it instead of `--mode rpc` | Owner: "implement app-server, just what we need" |
+| 2026-10-01 | R24: goal = swappable clients: Codex-compatible wire format both ways (hoobot ↔ hoocode or real Codex; Codex TUI ↔ hoocode) | Settles T7.1 |
+| 2026-10-01 | R25: first build = L3 stdio + single-process daemon on a Unix socket with fan-out; one workspace per server; no workers, TCP WebSocket or profiles yet | Smallest server hoobot can use |
+| 2026-10-01 | R26: unimplemented methods → `method not found`, except neutral results for what a recorded `codex --remote` session calls | "Just what we need" while the Codex TUI still connects |
+| 2026-10-01 | R27: MIT = our code; deps must be permissive and MIT-compatible; nothing copied from Codex; Codex schemas generated at test time only | Settles T7.2–T7.3 (reading Codex source for behaviour is fine; copying is not) |
+| 2026-10-01 | R28: hoobot stays TypeScript on Bun; reaches the socket with `ws+unix://` | Settles T7.4; Bun supports WebSocket over a Unix socket |

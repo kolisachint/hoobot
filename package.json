@@ -1,11 +1,32 @@
 {
   "name": "hoo-discord-bot",
+  "version": "0.1.0",
+  "description": "Use hoocode from Discord: a Discord bot that talks the Codex app-server protocol",
   "type": "module",
-  "private": true,
-  "devDependencies": {
-    "@types/bun": "^1.4.2"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kolisachint/hoobot.git"
   },
-  "peerDependencies": {
+  "bugs": "https://github.com/kolisachint/hoobot/issues",
+  "homepage": "https://github.com/kolisachint/hoobot#readme",
+  "bin": {
+    "hoo-discord-bot": "src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE",
+    ".env.example"
+  ],
+  "engines": {
+    "bun": ">=1.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
     "typescript": "^7.0.2"
   },
   "dependencies": {
@@ -14,6 +35,8 @@
   "scripts": {
     "start": "bun src/index.ts",
     "dev": "bun --watch src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test test/format.test.ts",
+    "check": "bun run typecheck && bun run test"
   }
 }

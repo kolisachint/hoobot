@@ -1,0 +1,123 @@
+name: Release
+
+# Releases when package.json's version has not been released yet.
+# Every step is idempotent: re-running a half-failed run finishes the job.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write # push tag, create GitHub release
+  id-token: write # npm provenance
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version and release state
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v$VERSION"
+          {
+            echo "name=$NAME"
+            echo "version=$VERSION"
+            echo "tag=$TAG"
+          } >> "$GITHUB_OUTPUT"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$(npm view "$NAME@$VERSION" version 2>/dev/null)" = "$VERSION" ]; then
+            echo "npm_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "npm_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Decide
+        id: decide
+        run: |
+          if [ "${{ steps.state.outputs.tag_exists }}" = true ] \
+            && [ "${{ steps.state.outputs.release_exists }}" = true ] \
+            && [ "${{ steps.state.outputs.npm_exists }}" = true ]; then
+            echo "Version ${{ steps.state.outputs.version }} already released; nothing to do."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Releasing ${{ steps.state.outputs.tag }}" \
+              "(tag=${{ steps.state.outputs.tag_exists }}" \
+              "release=${{ steps.state.outputs.release_exists }}" \
+              "npm=${{ steps.state.outputs.npm_exists }})"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.decide.outputs.run == 'true'
+
+      - uses: actions/setup-node@v4
+        if: steps.decide.outputs.run == 'true'
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Install
+        if: steps.decide.outputs.run == 'true'
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck and test
+        if: steps.decide.outputs.run == 'true'
+        run: bun run check
+
+      - name: Create tag
+        if: steps.decide.outputs.run == 'true' && steps.state.outputs.tag_exists != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.state.outputs.tag }}" -m "${{ steps.state.outputs.tag }}"
+          git push origin "${{ steps.state.outputs.tag }}"
+
+      - name: Create GitHub release
+        if: steps.decide.outputs.run == 'true' && steps.state.outputs.release_exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.state.outputs.tag }}" \
+            --verify-tag \
+            --title "${{ steps.state.outputs.tag }}" \
+            --generate-notes
+
+      - name: Publish to npm
+        if: steps.decide.outputs.run == 'true' && steps.state.outputs.npm_exists != 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public
+
+      - name: Summary
+        if: steps.decide.outputs.run == 'true'
+        run: |
+          {
+            echo "### Released ${{ steps.state.outputs.tag }}"
+            echo "- GitHub: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.state.outputs.tag }}"
+            echo "- npm: https://www.npmjs.com/package/${{ steps.state.outputs.name }}/v/${{ steps.state.outputs.version }}"
+          } >> "$GITHUB_STEP_SUMMARY"

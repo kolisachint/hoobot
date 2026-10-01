@@ -1,5 +1,11 @@
 # 18 — Current step: hoobot on Rust hoocode, MIT only
 
+> **Revised 2026-10-01 (R23–R28):** we no longer wait on `--mode rpc`
+> approvals. hoocode gets a minimal app-server now (hoocode
+> `docs/design/app-server.md`) and hoobot moves to it. The T7 questions
+> below are answered in the README decision log (R24–R28); T7.5 (warm
+> subagent opt-out) is moot for hoobot.
+
 Status: **decided 2026-10-01, design and plan only.** Nothing built yet.
 B+ ([17](17-architecture-review.md)) stays the target. This doc says what we
 do first, and what changes in the B+ plan now that hoocode is Rust.

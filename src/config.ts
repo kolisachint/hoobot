@@ -1,4 +1,5 @@
 import { mkdirSync, existsSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 function required(name: string): string {
@@ -28,6 +29,18 @@ export const config = {
   workdir: resolve(process.env.HOO_WORKDIR?.trim() || "./workspace"),
   hoocodeBin: process.env.HOOCODE_BIN?.trim() || "hoocode",
   hoocodeArgs: (process.env.HOOCODE_ARGS ?? "").split(/\s+/).filter(Boolean),
+  /**
+   * The Codex app-server to talk to: `unix://PATH` for a running server
+   * (`hoocode app-server --listen unix://` or `codex app-server --listen unix://`),
+   * or empty to start `hoocode app-server` in the work folder over stdio.
+   */
+  appServer: process.env.APP_SERVER?.trim() || "",
+  /** Optional model for new threads, e.g. anthropic/claude-sonnet-4-5. */
+  model: process.env.MODEL?.trim() || undefined,
+  /** Discord thread → app-server thread links. */
+  linksFile: resolve(
+    process.env.LINKS_FILE?.trim() || join(homedir(), ".local", "share", "hoobot", "links.json"),
+  ),
   approvalTimeoutMs: Number(process.env.APPROVAL_TIMEOUT_MINUTES ?? 10) * 60_000,
   idleTimeoutMs: Number(process.env.IDLE_TIMEOUT_MINUTES ?? 30) * 60_000,
   debug: process.env.DEBUG === "1",
@@ -47,12 +60,16 @@ if (config.allowedUserIds.size === 0) {
  * separate mode name is the only way to make hoocode ask first. Those asks
  * become Allow / Deny buttons in Discord.
  *
+ * Rust hoocode reads `<workspace>/.cortexcode/`; the old TypeScript build
+ * read `.hoocode/`. Without the right one, the workspace silently falls back
+ * to the global mode and nothing asks.
+ *
  * Only written when missing, so a real project's own config is never clobbered.
  */
 export function prepareWorkspace() {
   mkdirSync(config.workdir, { recursive: true });
 
-  const hooDir = join(config.workdir, ".hoocode");
+  const hooDir = join(config.workdir, ".cortexcode");
   const cfgPath = join(hooDir, "hoo-config.json");
   if (!existsSync(cfgPath)) {
     mkdirSync(hooDir, { recursive: true });
