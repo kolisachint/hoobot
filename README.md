@@ -1,4 +1,4 @@
-# hoo-discord-bot
+# hoobot
 
 Use **hoocode** from Discord.
 
@@ -26,7 +26,7 @@ Needs [Bun](https://bun.sh). The bot reads `.env` from the folder you start it i
 ```sh
 bun add -g @kolisachint/hoobot
 curl -o .env https://raw.githubusercontent.com/kolisachint/hoobot/main/.env.example   # then fill it in
-hoo-discord-bot
+hoobot
 ```
 
 ## Setup
@@ -68,8 +68,8 @@ scripts/service.sh restart     # after editing .env or code
 scripts/service.sh uninstall   # stop + remove
 ```
 
-- Service file: `~/Library/LaunchAgents/com.hoo.discord-bot.plist`
-- Log: `~/.local/state/hoo-discord-bot/bot.log`
+- Service file: `~/Library/LaunchAgents/com.hoo.hoobot.plist`
+- Log: `~/.local/state/hoobot/bot.log`
 
 The Mac must be awake and logged in for the bot to answer.
 
@@ -79,6 +79,19 @@ The Mac must be awake and logged in for the bot to answer.
   e.g. `@hoo list the files here`. It opens a thread.
 - **Continue:** type in that thread. No mention needed.
 - **Steer:** typing while it's busy redirects the current run.
+- **Model per thread:** `!model` lists hoocode's scoped models (your
+  `enabledModels`, set with the model picker in the hoocode TUI). The pick
+  applies from the next message, the conversation carries on, and it is
+  remembered across bot restarts. `!model <part of name>` also finds models
+  outside the scope.
+- **One folder per channel:** set `WORKSPACES=<channel id>=<folder>,...`.
+  Threads in that channel work in that folder, with its own hoocode
+  app-server. Other channels use `HOO_WORKDIR`.
+- **Output:** while it works you see one status line
+  (`⏳ Working · 4 steps · 1m 20s · bash ...`). When it's done the status
+  line is removed and only the final answer is posted, with a short footer:
+  PR link, commit, files edited, steps, time and model.
+  `!verbose` shows every step and in-between message instead.
 
 ### Commands (inside a thread)
 
@@ -87,24 +100,29 @@ The Mac must be awake and logged in for the bot to answer.
 | `!stop` | Stop the current run |
 | `!new` | Forget the conversation |
 | `!status` | Model, busy or not, thread, server |
-| `!model <name>` | Switch model from the next message |
+| `!model` | Pick this thread's model from a dropdown |
+| `!model <part of name>` | Pick it directly, e.g. `!model kimi` |
+| `!verbose` | Show every step in this thread (again to turn off) |
 | `!help` | Show help |
 
 ## Safety
 
 - Only user IDs in `ALLOWED_USER_IDS` can use it.
   The bot won't start if that list is empty.
-- `bash`, `edit` and `write` show **Allow once / Deny** buttons.
-  No click within 10 minutes means denied.
-- There is no "Always" button. It would change your
-  global `~/.hoocode/hoo-config.json`.
+- `APPROVALS=auto` (default): `bash`, `edit` and `write` run without
+  asking, so the bot can finish a task end to end. Anyone on the allow
+  list can run any command on this Mac through it.
+- `APPROVALS=ask`: they show **Allow once / Deny** buttons instead.
+  No click within 10 minutes means denied. There is no "Always" button;
+  it would change your global `~/.hoocode/hoo-config.json`.
 
-How the approvals work: on first start the bot writes
+How it works: on start the bot writes
 `workspace/.cortexcode/hoo-config.json`, which puts that folder in a
-custom `discord` mode. In that mode only `read` runs without asking.
-Your normal `build` mode, which skips approvals, is not used here.
-The server sends approvals to every client on the thread; the first
-answer wins and the other clients see it resolved.
+custom `discord` mode (`auto_allow` follows `APPROVALS`), plus a short
+Discord system prompt in `modes/discord/system.md`. It only rewrites
+these files while they still hold what it generated; edit them and they
+are left alone. With `ask`, the server sends approvals to every client on
+the thread; the first answer wins and the others see it resolved.
 
 ## Files
 

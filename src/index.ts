@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
 /**
- * hoo-discord-bot: talk to hoocode from Discord.
+ * hoobot: talk to hoocode from Discord.
  *
  * - Mention the bot in a channel → it opens a thread and answers there.
  * - Every message in that thread goes to the same hoocode session.
- * - Commands inside a thread: !stop  !new  !status  !model <pattern>  !help
+ * - Commands inside a thread: !stop  !new  !status  !model [name]  !verbose  !help
+ * - Each channel in WORKSPACES works in its own folder with its own app-server.
  */
 import {
   ChannelType,
@@ -15,12 +16,12 @@ import {
   type Message,
   type ThreadChannel,
 } from "discord.js";
-import { config, prepareWorkspace } from "./config.ts";
+import { allWorkdirs, config, prepareWorkspace, workdirFor } from "./config.ts";
 import { CodexClient } from "./codex-client.ts";
 import { LinkStore } from "./links.ts";
 import { ThreadSession } from "./session.ts";
 
-prepareWorkspace();
+for (const dir of allWorkdirs()) prepareWorkspace(dir);
 
 const links = new LinkStore(config.linksFile);
 const sessions = new Map<string, ThreadSession>();
@@ -31,30 +32,34 @@ function endpoint(): string {
   return `stdio:${config.hoocodeBin} app-server ${config.hoocodeArgs.join(" ")}`;
 }
 
-let app: Promise<CodexClient> | null = null;
+/** One app-server per folder, started on first use. */
+const apps = new Map<string, Promise<CodexClient>>();
 
-/** The shared app-server connection; reconnects after it drops. */
-function appServer(): Promise<CodexClient> {
-  app ??= (async () => {
+/** The app-server for `workdir`; reconnects after it drops. */
+function appServer(workdir: string): Promise<CodexClient> {
+  let app = apps.get(workdir);
+  if (app) return app;
+  app = (async () => {
     // A stdio server runs in the work folder; a socket server has its own.
     const client = await CodexClient.connect(
       endpoint(),
       { name: "hoobot", version: "0.1.0" },
-      { cwd: config.workdir },
+      { cwd: workdir },
     );
-    console.log(`Connected to app-server ${client.endpoint}`);
+    console.log(`Connected to app-server ${client.endpoint} in ${workdir}`);
     client.on("close", (reason: string) => {
-      console.error(`app-server connection closed: ${reason}`);
-      app = null;
-      // Sessions hold the old client; drop them. Threads resume on the next message.
-      for (const s of [...sessions.values()]) s.close();
+      console.error(`app-server for ${workdir} closed: ${reason}`);
+      apps.delete(workdir);
+      // Its sessions hold the old client; drop them. Threads resume on the next message.
+      for (const s of [...sessions.values()]) if (s.workdir === workdir) s.close();
     });
     return client;
   })().catch((err) => {
-    console.error(`Can't reach app-server: ${err instanceof Error ? err.message : String(err)}`);
-    app = null;
+    console.error(`Can't reach app-server for ${workdir}: ${err instanceof Error ? err.message : String(err)}`);
+    apps.delete(workdir);
     throw err;
   });
+  apps.set(workdir, app);
   return app;
 }
 /** Threads this bot created, so it only listens in its own threads. */
@@ -79,16 +84,21 @@ const HELP = [
   "- `!stop`: stop the current run",
   "- `!new`: forget this conversation, start fresh",
   "- `!status`: model, busy or not, folder",
-  "- `!model <name>`: switch model from the next message, e.g. `!model anthropic/claude-sonnet-4-5`",
+  "- `!model`: pick this thread's model from a list (from the next message; the conversation carries on)",
+  "- `!model <part of name>`: pick it directly, e.g. `!model kimi`",
+  "- `!verbose`: show every step in this thread (again to turn off)",
   "- `!help`: this message",
   "",
   "Typing while I'm busy steers the current run.",
-  "Commands that change files or run shell ask for approval with buttons.",
+  "While I work you see one status line; then the final answer with a short",
+  "summary (PR, commits, files, steps, time, model).",
+  ...(config.approvals === "ask" ? ["Commands that change files or run shell ask for approval with buttons."] : []),
 ].join("\n");
 
 client.once(Events.ClientReady, (c) => {
   console.log(`Logged in as ${c.user.tag}`);
   console.log(`Working folder: ${config.workdir}`);
+  for (const [channel, dir] of config.workspaces) console.log(`  channel ${channel} → ${dir}`);
   console.log(`Allowed users: ${[...config.allowedUserIds].join(", ")}`);
 });
 
@@ -118,7 +128,7 @@ async function onMessage(message: Message) {
   console.log(`[msg] ${message.author.username} (${message.author.id}) in ${channel.id}: ${message.content.slice(0, 80)}`);
 
   const parentId = channel.isThread() ? channel.parentId : channel.id;
-  if (config.channelIds.size && (!parentId || !config.channelIds.has(parentId))) return;
+  if (config.channelIds.size && (!parentId || !(config.channelIds.has(parentId) || config.workspaces.has(parentId)))) return;
 
   if (!config.allowedUserIds.has(message.author.id)) {
     if (mentioned) await message.reply("Sorry, you're not on this bot's allow list.");
@@ -161,7 +171,7 @@ async function onMessage(message: Message) {
   }
   let session: ThreadSession;
   try {
-    session = await getSession(thread);
+    session = await getSession(thread, workdirFor(thread.parentId));
   } catch (err) {
     await thread.send(`**Can't reach hoocode:** ${err instanceof Error ? err.message : String(err)}`);
     return;
@@ -176,20 +186,22 @@ async function onMessage(message: Message) {
     case "!status":
       await session.status();
       return;
+    case "!verbose":
+      await session.toggleVerbose();
+      return;
     case "!model":
-      if (!arg) await thread.send("Usage: `!model provider/model-id`");
-      else await session.setModel(arg);
+      await session.chooseModel(arg);
       return;
   }
 
   await session.prompt(text || "(see attached image)", images);
 }
 
-async function getSession(thread: ThreadChannel): Promise<ThreadSession> {
-  const client = await appServer();
+async function getSession(thread: ThreadChannel, workdir: string): Promise<ThreadSession> {
+  const client = await appServer(workdir);
   let s = sessions.get(thread.id);
   if (!s) {
-    s = new ThreadSession(thread, client, links, (id) => sessions.delete(id));
+    s = new ThreadSession(thread, client, links, (id) => sessions.delete(id), workdir);
     sessions.set(thread.id, s);
   }
   return s;
@@ -215,7 +227,7 @@ async function imageAttachments(message: Message) {
 function shutdown() {
   console.log("Shutting down…");
   for (const s of [...sessions.values()]) s.close();
-  app?.then((c) => c.close()).catch(() => {});
+  for (const app of apps.values()) app.then((c) => c.close()).catch(() => {});
   client.destroy().finally(() => process.exit(0));
 }
 process.on("SIGINT", shutdown);

@@ -5,7 +5,11 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-export type Link = { threadId: string };
+export type Link = {
+  threadId: string;
+  /** Model picked with `!model` for this Discord thread; sent on every turn. */
+  model?: string;
+};
 
 export class LinkStore {
   private links: Record<string, Link> = {};

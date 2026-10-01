@@ -9,16 +9,19 @@ import {
   ButtonBuilder,
   ButtonStyle,
   ComponentType,
+  StringSelectMenuBuilder,
   type Message,
 } from "discord.js";
 import { config } from "./config.ts";
 import { code, describeTool, splitMessage, truncate } from "./format.ts";
 import { CodexClient, RpcError, userInput, type Notification, type RequestId, type ServerRequest } from "./codex-client.ts";
 import type { LinkStore } from "./links.ts";
+import { TurnSummary } from "./summary.ts";
 
 /** The bits of a Discord thread this file uses (tests pass a fake). */
 export interface ThreadLike {
   id: string;
+  /** Resolves to a message with `edit` and `delete`. */
   send(content: any): Promise<any>;
   sendTyping(): Promise<unknown>;
 }
@@ -34,10 +37,19 @@ export class ThreadSession {
   private progressMsg: Message | null = null;
   private progressDirty = false;
   private progressTimer: ReturnType<typeof setInterval>;
+  /** Show every tool step and in-between message (`!verbose`). Off: status line + final answer. */
+  private verbose = false;
+  /** The running turn's summary and its status-line message. */
+  private live: { summary: TurnSummary; msg: Message | null; at: number } | null = null;
+  /** Latest agent message of the running turn; posted when the turn ends. */
+  private answer: string | null = null;
   private typingTimer: ReturnType<typeof setInterval> | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private approvals = new Map<RequestId, Approval>();
+  /** The model the server reports for the thread. */
   private model: string | null = null;
+  /** The model picked for this Discord thread (`!model`), saved in the link. */
+  private chosenModel: string | null = null;
   /** Serialises Discord sends so replies stay in order. */
   private queue: Promise<unknown> = Promise.resolve();
   private ready: Promise<void> | null = null;
@@ -48,6 +60,8 @@ export class ThreadSession {
     private readonly client: CodexClient,
     private readonly links: LinkStore,
     private onClose: (threadId: string) => void,
+    /** The folder this thread works in (for `!status`). */
+    readonly workdir = config.workdir,
   ) {
     client.on("notification", this.onNotification);
     client.on("request", this.onRequest);
@@ -67,6 +81,7 @@ export class ThreadSession {
   private ensureThread(): Promise<void> {
     this.ready ??= (async () => {
       const link = this.links.get(this.linkKey);
+      this.chosenModel = link?.model ?? null;
       if (link) {
         try {
           const res = await this.client.request("thread/resume", { threadId: link.threadId });
@@ -87,10 +102,16 @@ export class ThreadSession {
 
   private async startThread() {
     const params: Record<string, unknown> = {};
-    if (config.model) params.model = config.model;
+    const model = this.chosenModel ?? config.model;
+    if (model) params.model = model;
     const res = await this.client.request("thread/start", params);
     this.adopt(res);
-    this.links.set(this.linkKey, { threadId: res.thread.id });
+    this.saveLink();
+  }
+
+  private saveLink() {
+    if (!this.threadId) return;
+    this.links.set(this.linkKey, { threadId: this.threadId, ...(this.chosenModel ? { model: this.chosenModel } : {}) });
   }
 
   private adopt(res: any) {
@@ -98,8 +119,8 @@ export class ThreadSession {
     this.model = res.model ?? null;
     // A turn still running on the server (e.g. after a bot restart).
     const running = (res.thread.turns ?? []).findLast?.((t: any) => t.status === "inProgress");
-    this.turnId = running?.id ?? null;
-    if (this.turnId) this.startTyping();
+    this.turnId = null;
+    if (running) this.beginTurn(running.id);
   }
 
   // ── Input from Discord ─────────────────────────────────────────────────────
@@ -121,12 +142,11 @@ export class ThreadSession {
     }
     try {
       const params: Record<string, unknown> = { threadId: this.threadId, input };
-      if (this.pendingModel) params.model = this.pendingModel;
+      // Sent every turn: the server ignores it when it's already the model,
+      // and it survives a bot restart or a server that forgot it.
+      if (this.chosenModel) params.model = this.chosenModel;
       const res = await this.client.request("turn/start", params);
-      if (this.pendingModel) {
-        this.model = this.pendingModel;
-        this.pendingModel = null;
-      }
+      if (this.chosenModel) this.model = this.chosenModel;
       this.beginTurn(res.turn.id);
     } catch (err) {
       await this.post(`**Not sent:** ${errorText(err)}`);
@@ -166,20 +186,117 @@ export class ThreadSession {
     await this.ensureThread();
     const lines = [
       "**Status**",
-      `- Model: ${code(this.pendingModel ?? this.model ?? "default")}`,
+      `- Model: ${code(this.chosenModel ?? this.model ?? "default")}${this.chosenModel && this.chosenModel !== this.model ? " (from the next message)" : ""}`,
       `- Busy: ${this.turnId ? "yes" : "no"}`,
+      `- Folder: ${code(this.workdir)}`,
       `- Thread: ${code(this.threadId ?? "none")}`,
       `- Server: ${code(this.client.endpoint)}`,
     ];
     await this.post(lines.join("\n"));
   }
 
-  private pendingModel: string | null = null;
+  /**
+   * `!model` → a dropdown of the server's models (hoocode: your
+   * `enabledModels` scope). `!model kimi` → that model if one matches,
+   * else a dropdown of the matches. Takes effect from the next message;
+   * the conversation carries on.
+   */
+  async chooseModel(query = "") {
+    await this.ensureThread();
+    let models: ModelChoice[];
+    try {
+      models = await this.listModels(query !== "");
+    } catch (err) {
+      await this.post(`**Can't list models:** ${errorText(err)}`);
+      return;
+    }
+    const q = query.toLowerCase();
+    if (q) {
+      const exact = models.find((m) => m.value.toLowerCase() === q || m.value.toLowerCase().endsWith(`/${q}`));
+      if (exact) return this.setModel(exact.value);
+      const matches = models.filter((m) => m.value.toLowerCase().includes(q) || m.label.toLowerCase().includes(q));
+      if (matches.length === 1) return this.setModel(matches[0]!.value);
+      if (matches.length === 0) {
+        await this.post(`No model matches ${code(query)}. Send \`!model\` for the list.`);
+        return;
+      }
+      // Scoped models first.
+      models = [...matches.filter((m) => !m.hidden), ...matches.filter((m) => m.hidden)];
+    }
+    if (models.length === 0) {
+      await this.post("The server lists no models.");
+      return;
+    }
+    const current = this.chosenModel ?? this.model;
+    const shown = models.slice(0, 25);
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId("model")
+      .setPlaceholder("Pick a model")
+      .addOptions(
+        shown.map((m) => ({
+          label: truncate(m.label, 100),
+          value: m.value.slice(0, 100),
+          description: m.label === m.value ? undefined : truncate(m.value, 100),
+          default: m.value === current || m.value.endsWith(`/${current}`),
+        })),
+      );
+    const more = models.length > shown.length ? `\nShowing ${shown.length} of ${models.length}; narrow it with \`!model <part of name>\`.` : "";
+    const title = `**Model:** ${code(current ?? "default")}. Pick one for this thread (from the next message):${more}`;
+    const msg = (await this.enqueue(() =>
+      this.thread.send({ content: title, components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu)] }),
+    )) as Message;
+    try {
+      const pick = await msg.awaitMessageComponent({
+        componentType: ComponentType.StringSelect,
+        time: 5 * 60_000,
+        filter: async (i) => {
+          if (config.allowedUserIds.has(i.user.id)) return true;
+          await i.reply({ content: "Only allowed users can change the model.", ephemeral: true }).catch(() => {});
+          return false;
+        },
+      });
+      const name = pick.values[0]!;
+      this.applyModel(name);
+      await pick.update({ content: modelSetText(name), components: [] });
+    } catch {
+      await msg.edit({ content: `**Model:** ${code(this.chosenModel ?? this.model ?? "default")} (not changed)`, components: [] }).catch(() => {});
+    }
+  }
 
-  /** Takes effect on the next turn (`turn/start` `model`). */
-  async setModel(name: string) {
-    this.pendingModel = name;
-    await this.post(`**Model:** ${code(name)} from the next message.`);
+  private async setModel(name: string) {
+    this.applyModel(name);
+    await this.post(modelSetText(name));
+  }
+
+  private applyModel(name: string) {
+    this.chosenModel = name;
+    this.saveLink();
+  }
+
+  /** All pages of `model/list`. */
+  private async listModels(includeHidden: boolean): Promise<ModelChoice[]> {
+    const out: ModelChoice[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 10; page++) {
+      const res: any = await this.client.request("model/list", { includeHidden, ...(cursor ? { cursor } : {}) });
+      for (const m of res?.data ?? []) {
+        const value = String(m.model ?? m.id);
+        out.push({ value, label: String(m.displayName || value), hidden: !!m.hidden });
+      }
+      cursor = res?.nextCursor ?? undefined;
+      if (!cursor) break;
+    }
+    return includeHidden ? out : out.filter((m) => !m.hidden);
+  }
+
+  /** Toggle the step-by-step view for this thread. */
+  async toggleVerbose() {
+    this.verbose = !this.verbose;
+    await this.post(
+      this.verbose
+        ? "**Verbose on:** every step and message is shown. `!verbose` again to turn it off."
+        : "**Verbose off:** a status line while working, then the final answer.",
+    );
   }
 
   close() {
@@ -196,6 +313,8 @@ export class ThreadSession {
     this.turnId = turnId;
     this.tools = [];
     this.progressMsg = null;
+    this.live = { summary: new TurnSummary(), msg: null, at: 0 };
+    this.answer = null;
     this.startTyping();
   }
 
@@ -217,14 +336,13 @@ export class ThreadSession {
         this.turnId = null;
         this.stopTyping();
         await this.flushProgress();
-        if (p.turn.status === "failed" && p.turn.error?.message) {
-          await this.post(`**Error:**\n${"```"}\n${truncate(p.turn.error.message, 1500)}\n${"```"}`);
-        }
+        await this.finishTurn(p.turn);
         this.touch();
         break;
       }
 
       case "item/started": {
+        this.live?.summary.started(p.item);
         const tool = toolLine(p.item);
         if (tool) {
           this.tools.push(tool);
@@ -235,6 +353,12 @@ export class ThreadSession {
 
       case "item/completed": {
         const item = p.item;
+        this.live?.summary.completed(item);
+        if (item.type === "agentMessage" && item.text?.trim() && !this.verbose) {
+          // Only the last message of the turn is posted (finishTurn).
+          this.answer = item.text;
+          break;
+        }
         if (item.type === "agentMessage" && item.text?.trim()) {
           // Text closes the current tool list; the next tools start a fresh one.
           await this.flushProgress();
@@ -257,8 +381,56 @@ export class ThreadSession {
     }
   }
 
+  /**
+   * Post the final answer with a footer (PR, commits, files, steps, time,
+   * model) and remove the status line. Errors are always posted in full.
+   */
+  private async finishTurn(turn: any) {
+    const status = this.live;
+    this.live = null;
+    const answer = this.answer;
+    this.answer = null;
+
+    const footer = status?.summary.footer(this.model) ?? "";
+    const parts: string[] = [];
+    if (answer) parts.push(answer);
+    if (turn.status === "failed") {
+      parts.push(`**Error:**\n${"```"}\n${truncate(turn.error?.message ?? "the turn failed", 1500)}\n${"```"}`);
+    } else if (!answer && !this.verbose && turn.status === "completed") {
+      parts.push("Done.");
+    }
+    if (parts.length) {
+      const chunks = splitMessage(parts.join("\n\n"));
+      const last = chunks.length - 1;
+      if (footer && chunks[last]!.length + footer.length + 1 <= 2000) chunks[last] += `\n${footer}`;
+      else if (footer) chunks.push(footer);
+      for (const chunk of chunks) await this.post(chunk);
+    } else if (footer && !this.verbose && turn.status !== "interrupted") {
+      await this.post(footer);
+    }
+    // Queued after any in-flight status send, so that message exists by now.
+    if (status) await this.enqueue(async () => status.msg?.delete()).catch(() => {});
+  }
+
+  /** Throttled: the status line while a turn runs (non-verbose). */
+  private async flushStatus() {
+    const status = this.live;
+    if (!status || this.verbose) return;
+    const now = Date.now();
+    // Quick answers need no status line; then refresh every 3 s.
+    if (now - status.summary.startedAt < 4000 || now - status.at < 3000) return;
+    status.at = now;
+    const body = status.summary.statusLine(now);
+    await this.enqueue(async () => {
+      if (this.live !== status) return; // turn ended meanwhile
+      if (status.msg) await status.msg.edit(body).catch(() => {});
+      else status.msg = await this.thread.send(body);
+    }).catch(() => {});
+  }
+
   /** Tool activity as one message, edited in place (throttled). */
   private async flushProgress() {
+    if (!this.verbose) return this.flushStatus();
     if (!this.progressDirty || this.tools.length === 0) return;
     this.progressDirty = false;
     // Words, not just symbols, so state doesn't rely on colour or icon shape.
@@ -396,6 +568,12 @@ export class ThreadSession {
     this.client.off("request", this.onRequest);
     this.onClose(this.thread.id);
   }
+}
+
+type ModelChoice = { value: string; label: string; hidden: boolean };
+
+function modelSetText(name: string): string {
+  return `**Model:** ${code(name)} from the next message. The conversation carries on.`;
 }
 
 /** A progress line for a tool-ish item, or null for messages. */

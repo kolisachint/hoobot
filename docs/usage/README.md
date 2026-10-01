@@ -22,8 +22,9 @@ check that a swap worked.
 - captures Discord messages (mentions, thread replies, `!` commands, button clicks);
 - maps each Discord thread to one app-server thread (`src/links.ts`, stored
   in `LINKS_FILE`);
-- turns server notifications into Discord messages, and approval requests
-  into **Allow once / Deny** buttons (`src/session.ts`).
+- turns server notifications into one status line and a final answer with a
+  footer (`src/session.ts`, `src/summary.ts`), and approval requests into
+  **Allow once / Deny** buttons.
 
 **The app-server does the work.** It owns threads, sessions on disk, the
 model, tools and approvals. hoobot never runs a tool itself.
@@ -33,7 +34,7 @@ only standard methods, so either side can be replaced:
 
 | Direction | Methods |
 |---|---|
-| hoobot → server | `initialize`, `initialized`, `thread/start`, `thread/resume`, `thread/unsubscribe`, `turn/start`, `turn/steer`, `turn/interrupt` |
+| hoobot → server | `initialize`, `initialized`, `thread/start`, `thread/resume`, `thread/unsubscribe`, `turn/start`, `turn/steer`, `turn/interrupt`, `model/list` |
 | server → hoobot (notifications) | `thread/started`, `turn/started`, `turn/completed`, `item/started`, `item/completed` |
 | server → hoobot (requests) | `item/commandExecution/requestApproval`, `item/fileChange/requestApproval` (any other request is declined) |
 
@@ -41,7 +42,7 @@ Two transports (`src/codex-client.ts`):
 
 | `APP_SERVER` value | What happens |
 |---|---|
-| empty | hoobot spawns `hoocode app-server` in `HOO_WORKDIR`, talks over stdio |
+| empty | hoobot spawns `hoocode app-server` in `HOO_WORKDIR` (and one more per `WORKSPACES` folder), talks over stdio |
 | `stdio:CMD ARGS` | hoobot spawns `CMD ARGS` in `HOO_WORKDIR`, talks over stdio |
 | `unix:///full/path.sock` | hoobot connects to an already running server (WebSocket over a Unix socket). The bare `unix://` is not accepted; give the full path |
 
@@ -62,7 +63,11 @@ In Discord:
 - `@hoo list the files here`: opens a thread and starts a turn.
 - Type in the thread to continue; type while it is busy to steer.
 - `!status` shows model, busy, thread id and **which server** (`Server:` line).
-- `!stop`, `!new`, `!model <name>`, `!help`.
+- `!stop`, `!new`, `!model [part of name]`, `!verbose`, `!help`.
+- `!model` uses `model/list`. hoocode marks models outside your
+  `enabledModels` as `hidden`, so the dropdown shows only those (Discord
+  allows 25). Codex has its own hidden flags. The pick is sent as `model`
+  on every `turn/start` and saved in `LINKS_FILE`.
 
 ## How to swap
 
@@ -81,13 +86,14 @@ Swapping is a config change only. No code changes on either side.
 
 hoobot does not set an approval policy; the server decides when to ask.
 
-- **hoocode:** on first start hoobot writes
-  `HOO_WORKDIR/.cortexcode/hoo-config.json`, a `discord` mode where only
-  `read` runs without asking. `bash`, `edit` and `write` become buttons.
-- **Codex:** that file means nothing to Codex. Codex uses its own config
-  (`~/.codex/config.toml`, `approval_policy` and sandbox settings). Set it
-  so Codex asks before commands (e.g. `approval_policy = "untrusted"`) or
-  commands will run without a button. Check this before pointing a shared
+- **hoocode:** on start hoobot writes
+  `HOO_WORKDIR/.cortexcode/hoo-config.json`, a `discord` mode. With
+  `APPROVALS=auto` (default) `bash`, `edit` and `write` run without asking;
+  with `APPROVALS=ask` only `read` does and the rest become buttons.
+- **Codex:** that file and `APPROVALS` mean nothing to Codex. Codex uses its
+  own config (`~/.codex/config.toml`, `approval_policy` and sandbox
+  settings). Set `approval_policy = "untrusted"` if you want buttons, or
+  commands will run without one. Check this before pointing a shared
   Discord server at Codex.
 
 ## Examples
@@ -194,7 +200,7 @@ For a socket, check the server process is still running and the path in
 
 **3. End-to-end with fake Discord (real server, uses API credits)**
 
-Runs a turn that needs a bash approval, clicks Allow, checks the reply,
+Runs a turn that needs a bash approval (it forces `APPROVALS=ask`), clicks Allow, checks the reply,
 then restarts the client and checks the same thread resumes. It uses
 `/tmp/hoo-bot-e2e` and its own links file, never your real ones.
 
@@ -223,7 +229,9 @@ Creates a thread, asks for a reply without tools, and exits 0 when
 |---|---|
 | `@hoo say hi` | a new thread with a reply |
 | `!status` | `Server:` is the endpoint you swapped to |
-| ask it to run `echo hi` | **Allow once / Deny** buttons; Allow runs it, Deny stops it |
+| ask it to run `echo hi` | `APPROVALS=auto`: runs, final answer with a `-# 1 step · …` footer. `ask`: **Allow once / Deny** buttons first |
+| a task over ~4 s | one `⏳ Working · …` line, removed when the answer arrives |
+| `!verbose`, then a task | every step and in-between message is shown |
 | type while it is busy | the run is steered, not queued |
 | `!stop` | the run stops |
 | restart the bot, then type in the same thread | the conversation continues (same `Thread:` in `!status`) |

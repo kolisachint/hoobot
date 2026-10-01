@@ -11,7 +11,7 @@
   "bugs": "https://github.com/kolisachint/hoobot/issues",
   "homepage": "https://github.com/kolisachint/hoobot#readme",
   "bin": {
-    "hoo-discord-bot": "src/index.ts"
+    "hoobot": "src/index.ts"
   },
   "files": [
     "src",
@@ -36,7 +36,7 @@
     "start": "bun src/index.ts",
     "dev": "bun --watch src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test test/format.test.ts test/codex-client.test.ts",
+    "test": "bun test test/format.test.ts test/codex-client.test.ts test/summary.test.ts test/session.test.ts test/config.test.ts",
     "check": "bun run typecheck && bun run test"
   }
 }
