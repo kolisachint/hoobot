@@ -3,7 +3,15 @@
 import { ChannelType, Client, GatewayIntentBits, type TextChannel } from "discord.js";
 const { config, prepareWorkspace } = await import("../src/config.ts");
 const { ThreadSession } = await import("../src/session.ts");
+const { CodexClient } = await import("../src/codex-client.ts");
+const { LinkStore } = await import("../src/links.ts");
 prepareWorkspace();
+const app = await CodexClient.connect(
+  config.appServer || `stdio:${config.hoocodeBin} app-server ${config.hoocodeArgs.join(" ")}`,
+  undefined,
+  { cwd: config.workdir },
+);
+const links = new LinkStore("/tmp/hoo-bot-live-links.json");
 
 const CHANNEL = process.env.LIVE_CHANNEL_ID ?? "1554149386735325296";
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
@@ -20,7 +28,7 @@ console.log("thread:", thread.url);
 
 let closed!: () => void;
 const done = new Promise<void>((r) => (closed = r));
-const s = new ThreadSession(thread, () => closed());
+const s = new ThreadSession(thread, app, links, () => closed());
 const t0 = Date.now();
 await s.prompt(
   "Live test from the bot's installer. Without using any tools, reply in two short lines: " +
@@ -37,5 +45,6 @@ while (!reply && Date.now() - t0 < 120_000) {
 console.log(reply ? `reply after ${((Date.now() - t0) / 1000).toFixed(1)}s:\n${reply}` : "NO REPLY within 120s");
 s.close();
 await done;
+app.close();
 await client.destroy();
 process.exit(reply ? 0 : 1);

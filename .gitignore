@@ -35,3 +35,8 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # hoocode working folder + per-thread sessions
 workspace/
+
+# cortexcode: keep only shared prompts (/pr, /postmerge) and plans
+.cortexcode/*
+!.cortexcode/prompts/
+!.cortexcode/plans/

@@ -1,3 +1,4 @@
+#!/usr/bin/env bun
 /**
  * hoo-discord-bot: talk to hoocode from Discord.
  *
@@ -15,11 +16,46 @@ import {
   type ThreadChannel,
 } from "discord.js";
 import { config, prepareWorkspace } from "./config.ts";
+import { CodexClient } from "./codex-client.ts";
+import { LinkStore } from "./links.ts";
 import { ThreadSession } from "./session.ts";
 
 prepareWorkspace();
 
+const links = new LinkStore(config.linksFile);
 const sessions = new Map<string, ThreadSession>();
+
+/** `unix://PATH`, or `hoocode app-server` over stdio in the work folder. */
+function endpoint(): string {
+  if (config.appServer) return config.appServer;
+  return `stdio:${config.hoocodeBin} app-server ${config.hoocodeArgs.join(" ")}`;
+}
+
+let app: Promise<CodexClient> | null = null;
+
+/** The shared app-server connection; reconnects after it drops. */
+function appServer(): Promise<CodexClient> {
+  app ??= (async () => {
+    // A stdio server runs in the work folder; a socket server has its own.
+    const client = await CodexClient.connect(
+      endpoint(),
+      { name: "hoobot", version: "0.1.0" },
+      { cwd: config.workdir },
+    );
+    console.log(`Connected to app-server ${client.endpoint}`);
+    client.on("close", (reason: string) => {
+      console.error(`app-server connection closed: ${reason}`);
+      app = null;
+      // Sessions hold the old client; drop them. Threads resume on the next message.
+      for (const s of [...sessions.values()]) s.close();
+    });
+    return client;
+  })().catch((err) => {
+    app = null;
+    throw err;
+  });
+  return app;
+}
 /** Threads this bot created, so it only listens in its own threads. */
 const ownThreads = new Set<string>();
 
@@ -42,7 +78,7 @@ const HELP = [
   "- `!stop`: stop the current run",
   "- `!new`: forget this conversation, start fresh",
   "- `!status`: model, busy or not, folder",
-  "- `!model <name>`: switch model, e.g. `!model anthropic/claude-sonnet-4-5`",
+  "- `!model <name>`: switch model from the next message, e.g. `!model anthropic/claude-sonnet-4-5`",
   "- `!help`: this message",
   "",
   "Typing while I'm busy steers the current run.",
@@ -118,34 +154,41 @@ async function onMessage(message: Message) {
   // Commands.
   const [cmd, ...rest] = text.split(/\s+/);
   const arg = rest.join(" ").trim();
-  const existing = sessions.get(thread.id);
+  if (cmd?.toLowerCase() === "!help") {
+    await thread.send(HELP);
+    return;
+  }
+  let session: ThreadSession;
+  try {
+    session = await getSession(thread);
+  } catch (err) {
+    await thread.send(`**Can't reach hoocode:** ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
   switch (cmd?.toLowerCase()) {
-    case "!help":
-      await thread.send(HELP);
-      return;
     case "!stop":
-      if (existing) await existing.abort();
-      else await thread.send("Nothing is running.");
+      await session.abort();
       return;
     case "!new":
-      await getSession(thread).newSession();
+      await session.newSession();
       return;
     case "!status":
-      await getSession(thread).status();
+      await session.status();
       return;
     case "!model":
       if (!arg) await thread.send("Usage: `!model provider/model-id`");
-      else await getSession(thread).setModel(arg);
+      else await session.setModel(arg);
       return;
   }
 
-  await getSession(thread).prompt(text || "(see attached image)", images);
+  await session.prompt(text || "(see attached image)", images);
 }
 
-function getSession(thread: ThreadChannel): ThreadSession {
+async function getSession(thread: ThreadChannel): Promise<ThreadSession> {
+  const client = await appServer();
   let s = sessions.get(thread.id);
   if (!s) {
-    s = new ThreadSession(thread, (id) => sessions.delete(id));
+    s = new ThreadSession(thread, client, links, (id) => sessions.delete(id));
     sessions.set(thread.id, s);
   }
   return s;
@@ -157,20 +200,21 @@ function isOwnThread(thread: ThreadChannel): boolean {
 }
 
 async function imageAttachments(message: Message) {
-  const out: { type: "image"; data: string; mimeType: string }[] = [];
+  const out: { data: string; mimeType: string }[] = [];
   for (const att of message.attachments.values()) {
     const mime = att.contentType?.split(";")[0] ?? "";
     if (!mime.startsWith("image/") || att.size > 5_000_000) continue;
     const res = await fetch(att.url);
     if (!res.ok) continue;
-    out.push({ type: "image", data: Buffer.from(await res.arrayBuffer()).toString("base64"), mimeType: mime });
+    out.push({ data: Buffer.from(await res.arrayBuffer()).toString("base64"), mimeType: mime });
   }
   return out;
 }
 
 function shutdown() {
   console.log("Shutting down…");
-  for (const s of sessions.values()) s.close();
+  for (const s of [...sessions.values()]) s.close();
+  app?.then((c) => c.close()).catch(() => {});
   client.destroy().finally(() => process.exit(0));
 }
 process.on("SIGINT", shutdown);

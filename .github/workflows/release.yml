@@ -1,0 +1,205 @@
+name: Release
+
+# A merged PR labelled npm:patch, npm:minor or npm:major is released:
+#   bump package.json on main -> commit "chore(release): vX.Y.Z" + tag
+#   -> GitHub release -> npm publish.
+# No npm:* label, no release. Re-running a half-failed run resumes it:
+# the release commit records "Release-PR: #N", so the version is found again
+# instead of bumped twice.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump for a manual release
+        type: choice
+        options: [patch, minor, major]
+        required: true
+
+permissions:
+  contents: write # push release commit + tag, create GitHub release
+  pull-requests: write # comment on the released PR
+  id-token: write # npm provenance
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Find bump
+        id: bump
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          INPUT_BUMP: ${{ inputs.bump }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ]; then
+            {
+              echo "bump=$INPUT_BUMP"
+              echo "pr="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          PR=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/pulls" \
+            --jq '[.[] | select(.merged_at != null)][0].number // empty')
+          if [ -z "$PR" ]; then
+            echo "No merged PR for $SHA; nothing to release."
+            echo "bump=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          LABELS=$(gh pr view "$PR" --json labels --jq '[.labels[].name | select(startswith("npm:"))] | join(" ")')
+          COUNT=$(echo "$LABELS" | wc -w)
+          if [ "$COUNT" -gt 1 ]; then
+            echo "::error::PR #$PR has more than one npm:* label: $LABELS"
+            exit 1
+          fi
+          BUMP=${LABELS#npm:}
+          case "$BUMP" in
+            patch|minor|major|"") ;;
+            *) echo "::error::Unknown label npm:$BUMP on PR #$PR"; exit 1 ;;
+          esac
+          if [ -z "$BUMP" ]; then
+            echo "PR #$PR has no npm:* label; nothing to release."
+          fi
+          {
+            echo "bump=$BUMP"
+            echo "pr=$PR"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Version
+        id: version
+        if: steps.bump.outputs.bump != ''
+        env:
+          BUMP: ${{ steps.bump.outputs.bump }}
+          PR: ${{ steps.bump.outputs.pr }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Re-run of a PR that already got its release commit? Reuse it.
+          EXISTING=""
+          if [ -n "$PR" ]; then
+            EXISTING=$(git log origin/main --format=%H --grep="^Release-PR: #$PR\$" -1)
+          fi
+
+          if [ -n "$EXISTING" ]; then
+            git checkout --quiet "$EXISTING"
+            VERSION=$(node -p "require('./package.json').version")
+            echo "Resuming release v$VERSION for PR #$PR ($EXISTING)"
+            echo "commit_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            npm version "$BUMP" --no-git-tag-version >/dev/null
+            VERSION=$(node -p "require('./package.json').version")
+            echo "Bumping $BUMP -> v$VERSION"
+            echo "commit_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          {
+            echo "version=$VERSION"
+            echo "tag=v$VERSION"
+            echo "name=$(node -p "require('./package.json').name")"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.bump.outputs.bump != ''
+
+      - uses: actions/setup-node@v4
+        if: steps.bump.outputs.bump != ''
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Typecheck and test
+        if: steps.bump.outputs.bump != ''
+        run: |
+          bun install --frozen-lockfile
+          bun run check
+
+      - name: Commit and tag
+        if: steps.bump.outputs.bump != '' && steps.version.outputs.commit_exists != 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          PR: ${{ steps.bump.outputs.pr }}
+        run: |
+          git add package.json
+          if [ -n "$PR" ]; then
+            git commit -m "chore(release): $TAG" -m "Release-PR: #$PR"
+          else
+            git commit -m "chore(release): $TAG" -m "Release-PR: manual"
+          fi
+          git tag -a "$TAG" -m "$TAG"
+          # Commit and tag land together or not at all.
+          git push --atomic origin HEAD:main "refs/tags/$TAG"
+
+      - name: Tag (resumed run)
+        if: steps.bump.outputs.bump != '' && steps.version.outputs.commit_exists == 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if ! git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            git tag -a "$TAG" -m "$TAG"
+            git push origin "refs/tags/$TAG"
+          fi
+
+      - name: GitHub release
+        if: steps.bump.outputs.bump != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists."
+          else
+            gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
+          fi
+
+      - name: Publish to npm
+        if: steps.bump.outputs.bump != ''
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NAME: ${{ steps.version.outputs.name }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ "$(npm view "$NAME@$VERSION" version 2>/dev/null)" = "$VERSION" ]; then
+            echo "$NAME@$VERSION already on npm."
+          else
+            npm publish --provenance --access public
+          fi
+
+      - name: Comment on PR
+        if: steps.bump.outputs.bump != '' && steps.bump.outputs.pr != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.bump.outputs.pr }}
+          TAG: ${{ steps.version.outputs.tag }}
+          NAME: ${{ steps.version.outputs.name }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh pr comment "$PR" --body "Released **$TAG**: [GitHub release]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG) · [npm](https://www.npmjs.com/package/$NAME/v/$VERSION)"
+
+      - name: Summary
+        if: steps.bump.outputs.bump != ''
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          NAME: ${{ steps.version.outputs.name }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          {
+            echo "### Released $TAG"
+            echo "- GitHub: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG"
+            echo "- npm: https://www.npmjs.com/package/$NAME/v/$VERSION"
+          } >> "$GITHUB_STEP_SUMMARY"
