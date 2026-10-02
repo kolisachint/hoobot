@@ -10,7 +10,8 @@
  * is the config, `pidFor()` is the truth about whether a bot runs, and each
  * bot's own `/healthz` is the truth about how it is doing.
  *
- * - `GET  /api/manager`               every instance with its live health
+ * - `GET  /api/manager`               every instance with its live health, and
+ *                                    whether this Mac is being kept awake
  * - `GET  /api/names/suggest?seed=`   a free bot name (the re-roll button)
  * - `POST /api/instances`             create a bot
  * - `PATCH /api/instances/:name`      change settings (comments survive)
@@ -31,6 +32,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { avatarSvg, AVATAR_SHAPES, hashSeed, PALETTES } from "./avatar.ts";
+import { powerState } from "./power.ts";
 import {
   createInstance,
   deleteInstance,
@@ -147,6 +149,8 @@ export async function managerBody(dir?: string): Promise<Record<string, unknown>
     palettes: Object.entries(PALETTES).map(([id, p]) => ({ id, label: p.label, from: p.from, to: p.to })),
     shapes: AVATAR_SHAPES,
     instances: await liveInstances(dir),
+    // On a Mac, whether anything is keeping it awake while bots run.
+    power: await powerState(),
   };
 }
 
@@ -192,8 +196,10 @@ export function tailLog(name: string, lines = 80, dir?: string): string {
  * `__unchanged__` and left alone, so the real token is never in the
  * browser and a masked value is never written back as if it were one.
  */
-export function applyPatch(name: string, patch: Record<string, unknown>, dir?: string): Instance {
+export function applyPatch(name: string, patch: Record<string, unknown>, dir?: string): Instance & { skipped: string[] } {
   const values: Record<string, string> = {};
+  // Keys sent but not written, so the page can say so instead of "Saved".
+  const skipped: string[] = [];
   for (const [key, raw] of Object.entries(patch)) {
     if (key === "config" || key === "secrets") {
       const group = (raw ?? {}) as Record<string, unknown>;
@@ -202,14 +208,18 @@ export function applyPatch(name: string, patch: Record<string, unknown>, dir?: s
         // The browser never holds a real token, so it sends back either
         // UNCHANGED or the mask it was given. Writing a mask into .env
         // would break the bot with a token that looks almost right.
-        if (value === UNCHANGED || value.includes("•")) continue;
+        if (value === UNCHANGED) continue;
+        if (value.includes("•")) {
+          skipped.push(gkey);
+          continue;
+        }
         values[gkey] = value;
       }
       continue;
     }
     values[key] = String(raw ?? "");
   }
-  return writeInstance(name, values, { dir });
+  return { ...writeInstance(name, values, { dir }), skipped };
 }
 
 /** Create a bot from the UI's form. */
@@ -400,10 +410,22 @@ export function startManager(opts: { dir?: string; port?: number } = {}): Manage
   return { port: server.port ?? port, url: `http://127.0.0.1:${server.port ?? port}`, stop: () => server.stop(true) };
 }
 
-// `bun src/manager.ts` runs it; importing it (tests) doesn't.
-if (import.meta.main) {
+/**
+ * The command line: `bun src/manager.ts [--open]` from a checkout, or
+ * `hoobot manager [--open]` from npm. `--open` puts the page in front of you.
+ */
+export function runManager(args: string[]): void {
   const server = startManager();
   if (!server) process.exit(1);
-  // `bun run manager --open` puts the page in front of you.
-  if (process.argv.includes("--open")) Bun.spawn(["open", server.url], { stdout: "ignore", stderr: "ignore" });
+  if (args.includes("--open")) {
+    const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
+    try {
+      Bun.spawn([opener, server.url], { stdout: "ignore", stderr: "ignore" });
+    } catch {
+      console.log(`Open ${server.url} in your browser.`);
+    }
+  }
 }
+
+// `bun src/manager.ts` runs it; importing it (tests, the cli) doesn't.
+if (import.meta.main) runManager(process.argv.slice(2));

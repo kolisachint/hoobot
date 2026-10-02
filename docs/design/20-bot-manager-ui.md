@@ -168,3 +168,5 @@ about how the bot connects: `config.ts` still decides from tokens.
 | 2026-10-02 | P6 (landed): avatars are generated from `HOO_AVATAR_SEED`, never stored as images | A bot keeps its face with nothing to migrate, back up or gitignore |
 | 2026-10-02 | P7 (landed): tokens are masked in the API and a mask is never written back | A near-valid token is worse than none |
 | 2026-10-02 | P8 (landed): the manager refuses non-loopback `Host`/`Origin` | Otherwise any web page can drive your bots through your browser |
+| 2026-10-03 | P9: `hoobot manager [--open]` from npm; the package ships `scripts/`, and an installed manager keeps bots in `~/.hoobot/runtime` | A reinstall replaces the package folder; tokens must not live in it |
+| 2026-10-03 | P10: token boxes start empty with the mask beside them, save on leave, clear by button; PATCH reports refused keys | Editing a pre-filled mask made "Saved" lie |

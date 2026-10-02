@@ -11,11 +11,12 @@
   "bugs": "https://github.com/kolisachint/hoobot/issues",
   "homepage": "https://github.com/kolisachint/hoobot#readme",
   "bin": {
-    "hoobot": "src/index.ts"
+    "hoobot": "src/cli.ts"
   },
   "files": [
     "src",
     "web",
+    "scripts",
     "README.md",
     "LICENSE",
     ".env.example"
@@ -37,10 +38,10 @@
   },
   "scripts": {
     "start": "bun src/index.ts",
-    "manager": "bun src/manager.ts",
+    "manager": "bun src/cli.ts manager",
     "dev": "bun --watch src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test test/mrkdwn.test.ts test/slack.test.ts test/format.test.ts test/codex-client.test.ts test/summary.test.ts test/session.test.ts test/config.test.ts test/context.test.ts test/attachments.test.ts test/inbound.test.ts test/peers.test.ts test/health.test.ts test/avatar.test.ts test/instances.test.ts test/manager.test.ts",
+    "test": "bun test test/mrkdwn.test.ts test/slack.test.ts test/format.test.ts test/codex-client.test.ts test/summary.test.ts test/session.test.ts test/config.test.ts test/context.test.ts test/attachments.test.ts test/inbound.test.ts test/peers.test.ts test/health.test.ts test/avatar.test.ts test/instances.test.ts test/manager.test.ts test/power.test.ts",
     "check": "bun run typecheck && bun run test"
   }
 }

@@ -180,6 +180,31 @@ jobs:
             npm publish --provenance --access public
           fi
 
+      - name: Verify publish
+        if: steps.bump.outputs.bump != ''
+        env:
+          NAME: ${{ steps.version.outputs.name }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # npm answers "being processed, may take a few minutes" right after a
+          # publish, so `npm view` 404s for a while even though the upload worked.
+          # Poll before calling the release good, or a green run just means npm
+          # accepted the tarball -- not that the version is installable.
+          for i in $(seq 1 30); do
+            if [ "$(npm view --prefer-online "$NAME@$VERSION" version 2>/dev/null)" = "$VERSION" ]; then
+              echo "$NAME@$VERSION is on npm (after $((i * 20))s)."
+              LATEST=$(npm view "$NAME" dist-tags.latest 2>/dev/null)
+              if [ "$LATEST" != "$VERSION" ]; then
+                echo "::warning::latest is $LATEST, not $VERSION; another release may have landed since."
+              fi
+              exit 0
+            fi
+            echo "attempt $i/30: $NAME@$VERSION not visible yet; retrying in 20s."
+            sleep 20
+          done
+          echo "::error::$NAME@$VERSION never appeared on npm within 10 minutes. The commit and tag are pushed; re-run this workflow to resume -- it finds the existing release commit and does not bump again."
+          exit 1
+
       - name: Comment on PR
         if: steps.bump.outputs.bump != '' && steps.bump.outputs.pr != ''
         env:

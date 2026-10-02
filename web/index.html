@@ -11,21 +11,23 @@
     />
   </head>
   <body>
-    <div class="app">
+    <div class="app" id="app">
       <aside class="side">
         <div class="brand">
           <span class="brand-mark" aria-hidden="true"></span>
           <span class="brand-name">hoobot</span>
         </div>
-        <ul class="bots" id="bots" role="list"></ul>
-        <button class="btn primary block" id="new-bot" type="button">New bot</button>
+        <ul class="bots" id="bots" role="list" aria-label="Bots"></ul>
+        <button class="btn primary block" id="new-bot" type="button" aria-keyshortcuts="n" title="New bot (n)">New bot</button>
         <p class="side-foot" id="runtime-note"></p>
       </aside>
 
       <main class="main" id="main">
+        <div class="banner" id="offline" role="alert" hidden></div>
+        <div class="banner warn" id="sleep" role="status" hidden></div>
         <div class="placeholder" id="placeholder">
-          <p class="placeholder-title">No bot selected</p>
-          <p class="placeholder-sub">Pick one on the left, or make a new one.</p>
+          <p class="placeholder-title" id="placeholder-title">No bot selected</p>
+          <p class="placeholder-sub" id="placeholder-sub">Pick one on the left, or make a new one.</p>
         </div>
 
         <div class="detail" id="detail" hidden>
@@ -36,8 +38,9 @@
               <p class="sub" id="d-status">—</p>
             </div>
             <div class="head-actions">
-              <button class="btn ghost" id="btn-restart" type="button" title="Stop and start again">Restart</button>
-              <button class="btn" id="btn-toggle" type="button">Start</button>
+              <span class="chip" id="restart-chip" hidden>Restart to apply</span>
+              <button class="btn ghost" id="btn-restart" type="button" aria-keyshortcuts="r" title="Stop and start again (r)">Restart</button>
+              <button class="btn" id="btn-toggle" type="button" aria-keyshortcuts="s" title="Start or stop (s)">Start</button>
             </div>
           </header>
 
@@ -49,21 +52,22 @@
             <div class="status-grid" id="health-grid"></div>
           </section>
 
-          <section class="card">
+          <section class="card" id="log-card">
             <div class="card-head">
-              <h2>Settings</h2>
-              <span class="hint" id="save-hint">Saved to runtime/&lt;bot&gt;/.env</span>
+              <h2 id="log-title">Activity</h2>
+              <span class="hint" id="log-meta"></span>
             </div>
-            <div id="settings"></div>
+            <pre class="log" id="log" tabindex="0" aria-labelledby="log-title">No log yet.</pre>
           </section>
 
           <section class="card">
             <div class="card-head">
-              <h2>Activity</h2>
-              <span class="hint" id="log-meta"></span>
+              <h2>Settings</h2>
+              <span class="hint" id="save-hint" role="status" aria-live="polite">Changes save as you type</span>
             </div>
-            <pre class="log" id="log">No log yet.</pre>
+            <div id="settings"></div>
           </section>
+
         </div>
       </main>
     </div>
@@ -73,7 +77,9 @@
       <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
         <div class="sheet-head">
           <h2 id="sheet-title">New bot</h2>
-          <button class="icon-btn" id="sheet-close" type="button" aria-label="Close">×</button>
+          <button class="icon-btn" id="sheet-close" type="button" aria-label="Close">
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 3.5l9 9m0-9l-9 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" /></svg>
+          </button>
         </div>
 
         <div class="sheet-body">
@@ -83,8 +89,8 @@
               <div class="identity-art-actions">
                 <button class="btn tiny" id="n-reroll-face" type="button">Shuffle face</button>
                 <div class="segmented" id="n-shape" role="group" aria-label="Shape">
-                  <button type="button" data-shape="circle" class="on">Circle</button>
-                  <button type="button" data-shape="squircle">Square</button>
+                  <button type="button" data-shape="circle" class="on" aria-pressed="true">Circle</button>
+                  <button type="button" data-shape="squircle" aria-pressed="false">Rounded square</button>
                 </div>
               </div>
               <div class="swatches" id="n-palette" role="group" aria-label="Colour"></div>
@@ -104,7 +110,7 @@
 
           <section class="field-block">
             <h3>Chats</h3>
-            <div class="choices" id="n-surfaces"></div>
+            <div class="choices" id="n-surfaces" role="group" aria-label="Chats"></div>
             <p class="hint" id="n-token-hint"></p>
             <div id="n-tokens"></div>
           </section>
@@ -128,7 +134,8 @@
       </div>
     </div>
 
-    <div class="toast" id="toast" hidden></div>
+    <div class="toast" id="toast" aria-hidden="true" hidden></div>
+    <div class="sr-only" id="announce" role="status" aria-live="polite"></div>
     <script type="module" src="/app.js"></script>
   </body>
 </html>
