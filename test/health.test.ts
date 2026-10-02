@@ -13,8 +13,23 @@ const { config } = await import("../src/config.ts");
 
 const sessions = () => [{ key: "slack:C1", surface: "slack", id: "C1", workdir: "/tmp/w", busy: true }];
 
+/**
+ * A state with both surfaces. `surfaces()` reads the tokens `config` captured
+ * when it was first imported, and an earlier test file may have imported it
+ * without the Slack ones — so set the parsed values, not process.env.
+ */
+function stateWithBothSurfaces(instance: string) {
+  const saved = { slackBotToken: config.slackBotToken, slackAppToken: config.slackAppToken };
+  Object.assign(config, { slackBotToken: "xoxb-x", slackAppToken: "xapp-x" });
+  try {
+    return new HealthState(instance);
+  } finally {
+    Object.assign(config, saved);
+  }
+}
+
 test("a surface is only up once it is connected", () => {
-  const state = new HealthState("hoo");
+  const state = stateWithBothSurfaces("hoo");
   expect(state.ok).toBe(false);
   expect(state.surfaceList().map((s) => [s.name, s.state])).toEqual([
     ["discord", "connecting"],
@@ -32,7 +47,7 @@ test("a surface is only up once it is connected", () => {
 });
 
 test("a message marks activity on the surface and on the bot", () => {
-  const state = new HealthState("hee");
+  const state = stateWithBothSurfaces("hee");
   expect(state.lastMessageAt).toBeNull();
   state.message("slack");
   expect(state.lastMessageAt).not.toBeNull();
