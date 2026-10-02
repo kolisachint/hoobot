@@ -58,6 +58,12 @@ function prose(text: string): string {
     links.push(`<${url.replace(/[<>|]/g, encodeURIComponent)}|${escape(label).replace(/\|/g, "¦")}>`);
     return `\u0002${links.length - 1}\u0002`;
   });
+  // Slack mentions (`<@U123>`) stay as they are, so a bot can tag another.
+  const mentions: string[] = [];
+  s = s.replace(/<@([UW][A-Z0-9]+)>/g, (m) => {
+    mentions.push(m);
+    return `\u0003${mentions.length - 1}\u0003`;
+  });
   s = escape(s);
   s = s
     .replace(/\*\*(?=\S)(.+?)(?<=\S)\*\*/g, `${B}$1${B}`)
@@ -65,7 +71,9 @@ function prose(text: string): string {
     .replace(/(^|[^\w*])\*(?=\S)([^*]+?)(?<=\S)\*(?![\w*])/g, "$1_$2_")
     .replace(/~~(?=\S)(.+?)(?<=\S)~~/g, "~$1~")
     .replaceAll(B, "*");
-  return s.replace(/\u0002(\d+)\u0002/g, (_, i: string) => links[Number(i)]!);
+  return s
+    .replace(/\u0002(\d+)\u0002/g, (_, i: string) => links[Number(i)]!)
+    .replace(/\u0003(\d+)\u0003/g, (_, i: string) => mentions[Number(i)]!);
 }
 
 /**
