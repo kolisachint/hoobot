@@ -70,6 +70,9 @@ In Discord or Slack:
   allows 25, Slack 100). Codex has its own hidden flags. The pick is sent as `model`
   on every `turn/start` and saved in `LINKS_FILE`.
 
+To keep it running after the terminal closes (nohup, restart on crash),
+see [background.md](background.md).
+
 ## How to swap
 
 Swapping is a config change only. No code changes on either side.

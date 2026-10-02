@@ -5,7 +5,8 @@ process.env.SLACK_BOT_TOKEN ??= "xoxb-x";
 process.env.SLACK_APP_TOKEN ??= "xapp-x";
 process.env.ALLOWED_USER_IDS ??= "1";
 process.env.HOO_INSTANCE ??= "test-Instance";
-process.env.HEALTH_PORT ??= "off";
+// Set outright, not ??=: a bot running the tests exports its own HEALTH_PORT.
+process.env.HEALTH_PORT = "off";
 
 const { HealthState, botsBody, healthBody, startHealthServer } = await import("../src/health.ts");
 const { config } = await import("../src/config.ts");
