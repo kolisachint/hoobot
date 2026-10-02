@@ -36,6 +36,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # hoocode working folder + per-thread sessions
 workspace/
 
+# local instances: .env with tokens, logs, pids, working folders (scripts/runtime.sh)
+runtime/
+
 # cortexcode: keep only shared prompts (/pr, /postmerge) and plans
 .cortexcode/*
 !.cortexcode/prompts/

@@ -26,5 +26,8 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
-  }
+  },
+  // web/ is plain browser JavaScript, read by the browser as-is: it isn't
+  // part of the program tsc checks.
+  "exclude": ["node_modules", "web"]
 }

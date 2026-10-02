@@ -11,7 +11,8 @@
  *   SLACK_APP_TOKEN are. Both share the app-servers and the links file.
  */
 import { allWorkdirs, config, prepareWorkspace, surfaces } from "./config.ts";
-import { closeAll } from "./core.ts";
+import { closeAll, sessionStatus } from "./core.ts";
+import { health, startHealthServer } from "./health.ts";
 import { INBOX_DIRS, pruneInbox } from "./inbound.ts";
 
 for (const dir of allWorkdirs()) prepareWorkspace(dir);
@@ -33,15 +34,32 @@ for (const [channel, dir] of config.workspaces) console.log(`  channel ${channel
 console.log(`Allowed users: ${[...config.allowedUserIds].join(", ")}`);
 
 const stops: (() => Promise<void>)[] = [];
+const healthServer = startHealthServer(health, sessionStatus);
 // Loaded only when used, so a Slack-only bot never loads discord.js and the other way round.
 const starters = {
   discord: async () => (await import("./discord.ts")).startDiscord(),
   slack: async () => (await import("./slack.ts")).startSlack(),
 };
-const results = await Promise.allSettled(surfaces().map(async (s) => stops.push(await starters[s]())));
-results.forEach((r, i) => {
-  if (r.status === "rejected") console.error(`Can't connect to ${surfaces()[i]}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`);
-});
+/** A surface that connected, or the reason it didn't. */
+type Start = { name: string; stop: () => Promise<void> } | { name: string; error: string };
+const results = await Promise.all(
+  surfaces().map(async (name): Promise<Start> => {
+    try {
+      return { name, stop: await starters[name]() };
+    } catch (err) {
+      return { name, error: err instanceof Error ? err.message : String(err) };
+    }
+  }),
+);
+for (const r of results) {
+  if ("error" in r) {
+    health.failed(r.name, r.error);
+    console.error(`Can't connect to ${r.name}: ${r.error}`);
+  } else {
+    stops.push(r.stop);
+    health.connected(r.name);
+  }
+}
 if (stops.length === 0) {
   console.error("No chat connected. Check the tokens in .env.");
   process.exit(1);
@@ -49,6 +67,7 @@ if (stops.length === 0) {
 
 async function shutdown() {
   console.log("Shutting down…");
+  healthServer?.stop();
   await closeAll();
   await Promise.allSettled(stops.map((stop) => stop()));
   process.exit(0);
