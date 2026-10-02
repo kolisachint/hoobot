@@ -1,4 +1,4 @@
-// End-to-end: a real app-server, a fake Discord thread. Uses API credits.
+// End-to-end: a real app-server, a fake chat thread. Uses API credits.
 //
 //   bun test/session.e2e.ts                      # hoocode app-server (stdio)
 //   APP_SERVER="stdio:codex app-server" bun test/session.e2e.ts   # real Codex
@@ -27,28 +27,11 @@ prepareWorkspace();
 const endpoint = config.appServer || `stdio:${config.hoocodeBin} app-server ${config.hoocodeArgs.join(" ")}`;
 console.log(`app-server: ${endpoint}`);
 
+const { fakeSpace } = await import("./fixtures/fake-space.ts");
 const log: string[] = [];
 let clicks = 0;
-const fakeMsg = () => ({
-  edit: async (c: any) => void log.push(`EDIT  ${typeof c === "string" ? c : c.content}`),
-  delete: async () => void log.push("DELETE"),
-  awaitMessageComponent: async () => {
-    clicks++;
-    return {
-      customId: "ui:0", // Allow once
-      user: { username: "tester" },
-      update: async (c: any) => void log.push(`CLICK ${c.content}`),
-    };
-  },
-});
-const thread = {
-  id: "e2e-thread",
-  send: async (c: any) => {
-    log.push(`SEND  ${typeof c === "string" ? c : c.content + "  [buttons]"}`);
-    return fakeMsg();
-  },
-  sendTyping: async () => {},
-};
+// Allow once.
+const thread = fakeSpace("e2e-thread", { log, pick: (choices) => choices[0]!.value, onChoose: () => clicks++ });
 
 async function waitFor(what: string, pred: () => boolean, ms = 120_000) {
   const t0 = Date.now();

@@ -145,3 +145,23 @@ test("pruneInbox drops old message folders; clearSpace drops a space", () => {
   clearSpace(dir, "1");
   expect(existsSync(join(dir, ".discord/1"))).toBe(false);
 });
+
+test("Slack files go to .slack/, with Slack ids as folder names, and are never sent back", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "hoobot-in-slack-"));
+  const { fetcher } = server({ "u/a": "hello\n" });
+  const { saved } = await saveAttachments({
+    workdir: dir,
+    spaceId: "C1/1700000000.000100",
+    messageId: "1700000000.000200",
+    author: "alice",
+    attachments: [att("note.txt", "u/a", 6, "text/plain")],
+    fetcher,
+    surface: "slack",
+  });
+  expect(saved[0]!.path).toBe(join(dir, ".slack/C1_1700000000.000100/1700000000.000200/note.txt"));
+  expect(readFileSync(join(dir, ".slack/.gitignore"), "utf8")).toContain("Slack");
+  expect(formatAttachments(saved, [], "slack")).toStartWith('<slack-attachments note="Files sent on Slack');
+  expect(pickAttachments([saved[0]!.path], dir).files).toEqual([]);
+  clearSpace(dir, "C1/1700000000.000100", "slack");
+  expect(existsSync(join(dir, ".slack/C1_1700000000.000100"))).toBe(false);
+});

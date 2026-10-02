@@ -6,6 +6,7 @@
 import { ChannelType, Client, GatewayIntentBits, type TextChannel } from "discord.js";
 const { config, prepareWorkspace } = await import("../src/config.ts");
 const { ThreadSession } = await import("../src/session.ts");
+const { discordSpace } = await import("../src/discord.ts");
 const { CodexClient } = await import("../src/codex-client.ts");
 const { LinkStore } = await import("../src/links.ts");
 const { gatherContext, buildPrompt } = await import("../src/context.ts");
@@ -31,7 +32,7 @@ const READER_ID = "0"; // count the bot's posts as other people's for this test
 /** The test reader sees the bot's answers too; drop those lines to judge only "people". */
 const people = (ctx: string) => ctx.split("\n").filter((l) => /\(bot\): \w+: /.test(l)).join("\n");
 
-const s = new ThreadSession(space, app, links, () => {});
+const s = new ThreadSession(discordSpace(space), app, links, () => {});
 async function call(text: string) {
   const anchor = await say("sachin", `@hoo ${text}`);
   const { linked, seen } = await s.readState();

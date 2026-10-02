@@ -1,12 +1,16 @@
 # hoobot
 
-Use **hoocode** from Discord.
+Use **hoocode** from Discord and Slack.
 
 ```
-Discord  ⇄  this bot (Bun + discord.js)  ⇄  Codex app-server protocol  ⇄  hoocode app-server
+Discord ─┐
+         ├⇄  this bot (Bun)  ⇄  Codex app-server protocol  ⇄  hoocode app-server
+Slack ───┘
 ```
 
-Each Discord channel or thread is one shared app-server thread. The bot speaks only standard
+Each Discord or Slack channel or thread is one shared app-server thread.
+Run Discord, Slack or both from one process: each starts when its tokens
+are in `.env`. The bot speaks only standard
 Codex app-server methods, so the server is swappable: `hoocode app-server`
 (default), or the real `codex app-server`, set with `APP_SERVER` in `.env`.
 By default the bot starts `hoocode app-server` itself, in `HOO_WORKDIR`.
@@ -54,7 +58,57 @@ hoobot
    bun start
    ```
 
-   You should see `Logged in as hoo#1234`.
+   You should see `Discord: logged in as hoo#1234`.
+
+## Slack setup
+
+Slack uses Socket Mode: the bot opens the connection, so it needs no
+public URL. Discord can stay on or off; set only the Slack tokens for a
+Slack-only bot.
+
+1. At [api.slack.com/apps](https://api.slack.com/apps), **Create New App** →
+   **From an app manifest**, pick your workspace and paste:
+
+   ```yaml
+   display_information:
+     name: hoo
+   features:
+     bot_user:
+       display_name: hoo
+       always_online: true
+   oauth_config:
+     scopes:
+       bot:
+         - app_mentions:read
+         - channels:history
+         - groups:history
+         - channels:read
+         - groups:read
+         - chat:write
+         - files:read
+         - files:write
+         - users:read
+   settings:
+     event_subscriptions:
+       bot_events:
+         - message.channels
+         - message.groups
+     interactivity:
+       is_enabled: true
+     socket_mode_enabled: true
+   ```
+
+2. **Basic Information → App-Level Tokens → Generate Token**, add the
+   `connections:write` scope. Put the `xapp-…` token in `SLACK_APP_TOKEN=`.
+3. **Install App** to the workspace. Put the **Bot User OAuth Token**
+   (`xoxb-…`) in `SLACK_BOT_TOKEN=`.
+4. Add your Slack member ID to `ALLOWED_USER_IDS` (profile → ⋮ → **Copy
+   member ID**, e.g. `U0123ABCD`). Discord and Slack IDs go in the same list.
+5. Invite the bot to a channel (`/invite @hoo`), then `bun start`. You
+   should see `Slack: logged in as @hoo in <workspace>`.
+
+`CHANNEL_IDS` and `WORKSPACES` take Slack channel IDs too (channel details
+→ bottom of the **About** tab, e.g. `C0123ABCD`).
 
 ## Run in the background (macOS)
 
@@ -78,20 +132,21 @@ The Mac must be awake and logged in for the bot to answer.
 Every channel and every thread is a shared space where people and the bot
 work together. Each has its own hoocode conversation, model and settings.
 
-- **Call it:** mention the bot (`@hoo fix what we discussed above`) or
-  reply to one of its messages. Only `ALLOWED_USER_IDS` can call it.
-  It answers right there, as a reply to your message.
+- **Call it:** mention the bot (`@hoo fix what we discussed above`) or,
+  on Discord, reply to one of its messages. Only `ALLOWED_USER_IDS` can
+  call it. It answers right there (on Discord as a reply to your message).
 - **Context:** when called, it reads everyone's messages in that space
   since it last looked (up to 30, ~12k characters, newest kept), with
   names, as background. The first call reads the last 30. It never sends
   a message twice; messages sent while it was offline go with the next call.
   Replying to someone's message includes that message too.
-- **Threads:** open a Discord thread for a side task. It gets its own
+- **Threads:** open a thread for a side task. It gets its own
   conversation in the same folder; its first call also reads the channel
   messages that led up to it. Results stay in the thread.
 - **Steer:** calling it while it's busy redirects the current run.
-- **Needs** the **Read Message History** permission in those channels;
-  without it, it works with no context (and logs why).
+- **Needs** the **Read Message History** permission in those channels
+  (Slack: the bot must be in the channel); without it, it works with no
+  context (and logs why).
 - **Model per space:** `!model` lists hoocode's scoped models (your
   `enabledModels`, set with the model picker in the hoocode TUI). The pick
   applies from the next message, the conversation carries on, and it is
@@ -111,12 +166,16 @@ work together. Each has its own hoocode conversation, model and settings.
   command, or names in its answer are attached to the answer. Source code isn't; nothing outside the work
   folder is. Up to 10 files and ~9.5 MB per answer. HTML arrives as a
   download; Discord doesn't render it.
+  A channel and its threads share a folder. When two of them are working at
+  the same time, each answer only gets the files it wrote or names, so a
+  file isn't posted in both places. A file nobody names is left out rather
+  than guessed.
 - **Sending files:** files on the message that calls it, and on the message
-  it replies to, are saved in the work folder under
-  `.discord/<channel>/<message>/` and the prompt says where they are, so it
+  it replies to (Discord), are saved in the work folder under
+  `.discord/<channel>/<message>/` (Slack: `.slack/…`) and the prompt says where they are, so it
   can read, run or edit them. Text files up to 32 KB are pasted into the
   prompt too; images are also shown to the model as images. Up to 25 MB a
-  file. `.discord/` is git-ignored, cleared by `!new`, and files are deleted
+  file. `.discord/` and `.slack/` are git-ignored, cleared by `!new`, and files are deleted
   after 7 days. Files in other people's earlier messages are only named.
 
 ### Commands (in a channel or thread, after the mention)
@@ -145,7 +204,8 @@ work together. Each has its own hoocode conversation, model and settings.
 How it works: on start the bot writes
 `workspace/.cortexcode/hoo-config.json`, which puts that folder in a
 custom `discord` mode (`auto_allow` follows `APPROVALS`), plus a short
-Discord system prompt in `modes/discord/system.md`. It only rewrites
+chat system prompt in `modes/discord/system.md` (it names Slack when Slack
+runs; the mode keeps the name `discord` so existing folders stay in it). It only rewrites
 these files while they still hold what it generated; edit them and they
 are left alone. With `ask`, the server sends approvals to every client on
 the thread; the first answer wins and the others see it resolved.
@@ -154,21 +214,26 @@ the thread; the first answer wins and the others see it resolved.
 
 | Path | Purpose |
 |---|---|
-| `src/index.ts` | Discord side: who can call it, spaces, commands |
+| `src/index.ts` | Starts Discord and/or Slack, whichever have tokens |
+| `src/core.ts` | Shared by both: app-servers per folder, sessions, allow list, commands, prompt building |
+| `src/chat.ts` | The `ChatSpace` interface a session talks to |
+| `src/discord.ts` | Discord side: mentions and replies → calls; channels and threads → spaces; buttons, menus |
+| `src/slack.ts` | Slack side (Socket Mode): mentions → calls; channels and threads → spaces; Block Kit buttons, menus |
+| `src/mrkdwn.ts` | Markdown → Slack mrkdwn, and Slack text → plain text |
 | `src/context.ts` | What people said since the bot last read a space |
 | `src/session.ts` | One app-server thread per channel or thread; notifications → messages, buttons → approvals |
 | `src/codex-client.ts` | Codex app-server client (`unix://` WebSocket or `stdio:`) |
 | `src/links.ts` | Channel/thread → app-server thread, model, last read message (`LINKS_FILE`) |
 | `src/attachments.ts` | Picks written files to attach to the answer |
-| `src/inbound.ts` | Saves files sent on Discord into the work folder for the prompt |
-| `src/format.ts` | Splits long replies to fit Discord's 2000-character limit |
+| `src/inbound.ts` | Saves files sent on Discord or Slack into the work folder for the prompt |
+| `src/format.ts` | Splits long replies to fit the chat's message limit |
 | `workspace/` | hoocode's working folder (git-ignored); sessions are saved by hoocode |
 
 ## Tests
 
 ```sh
-bun run test                # message splitting (what CI runs)
-bun test/session.e2e.ts     # real app-server, fake Discord (uses API credits)
+bun run test                # unit tests (what CI runs)
+bun test/session.e2e.ts     # real app-server, fake chat (uses API credits)
 bun test/attachments.e2e.ts # real app-server writes files; checks they're attached
 bun test/inbound.e2e.ts     # files sent to it reach a real app-server
 APP_SERVER="stdio:codex app-server" bun test/session.e2e.ts   # same, real Codex

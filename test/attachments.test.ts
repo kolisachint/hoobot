@@ -62,3 +62,28 @@ test("changedSince finds new files of known types, skipping dot and build folder
   writeFileSync(join(dir, "new.ts"), "x");
   expect(changedSince(dir, since)).toEqual([join(dir, "out", "new.html")]);
 });
+
+test("TurnLog: overlap per folder; claimChanged keeps only named files when overlapped", async () => {
+  const { TurnLog, claimChanged } = await import("../src/attachments.ts");
+  const log = new TurnLog();
+  log.begin("/w", "a", 0);
+  log.end("/w", "a", 10);
+  log.begin("/w", "b", 20); // after a ended
+  log.begin("/other", "c", 5); // another folder
+  expect(log.overlapped("/w", "a", 30)).toBe(false);
+  log.begin("/w", "d", 25);
+  expect(log.overlapped("/w", "b", 30)).toBe(true);
+
+  const changed = ["/w/out/a.html", "/w/b.svg"];
+  expect(claimChanged(changed, "/w", true, "")).toEqual(changed);
+  expect(claimChanged(changed, "/w", false, "wrote out/a.html")).toEqual(["/w/out/a.html"]);
+  expect(claimChanged(changed, "/w", false, "convert x > b.svg")).toEqual(["/w/b.svg"]);
+  expect(claimChanged(changed, "/w", false, "nothing named; xb.svg.bak")).toEqual([]);
+});
+
+test("claimChanged matches whole names, ./ and absolute paths, and a trailing full stop", async () => {
+  const { claimChanged } = await import("../src/attachments.ts");
+  const f = ["/w/b.svg"];
+  for (const text of ["> ./b.svg", "Saved /w/b.svg", "Wrote b.svg.", "`b.svg`"]) expect(claimChanged(f, "/w", false, text)).toEqual(f);
+  for (const text of ["sub/b.svg", "ab.svg", "b.svg.bak", "b.svg-old"]) expect(claimChanged(f, "/w", false, text)).toEqual([]);
+});

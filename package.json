@@ -1,7 +1,7 @@
 {
   "name": "@kolisachint/hoobot",
   "version": "0.0.5",
-  "description": "Use hoocode from Discord: a Discord bot that talks the Codex app-server protocol",
+  "description": "Use hoocode from Discord and Slack: a chat bot that talks the Codex app-server protocol",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -30,13 +30,15 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "@slack/socket-mode": "^2",
+    "@slack/web-api": "^7",
     "discord.js": "^14.27.0"
   },
   "scripts": {
     "start": "bun src/index.ts",
     "dev": "bun --watch src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test test/format.test.ts test/codex-client.test.ts test/summary.test.ts test/session.test.ts test/config.test.ts test/context.test.ts test/attachments.test.ts test/inbound.test.ts",
+    "test": "bun test test/mrkdwn.test.ts test/slack.test.ts test/format.test.ts test/codex-client.test.ts test/summary.test.ts test/session.test.ts test/config.test.ts test/context.test.ts test/attachments.test.ts test/inbound.test.ts",
     "check": "bun run typecheck && bun run test"
   }
 }

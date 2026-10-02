@@ -1,11 +1,11 @@
 /**
- * Files the model wrote during a turn that are worth sending back to Discord
+ * Files the model wrote during a turn that are worth sending back to the chat
  * (HTML pages, images, PDFs, ...). Only regular files inside the work folder,
- * of a known type and under Discord's upload limit, are picked.
+ * of a known type and under Discord's upload limit (the smaller one), are picked.
  */
 import { readdirSync, realpathSync, statSync } from "node:fs";
 import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
-import { INBOX_DIR } from "./inbound.ts";
+import { INBOX_DIRS } from "./inbound.ts";
 
 /** File types sent back as attachments. Source code is left out on purpose. */
 export const ATTACH_EXTENSIONS = new Set([
@@ -75,6 +75,73 @@ export function changedSince(workdir: string, sinceMs: number): string[] {
 }
 
 /**
+ * Turns running per work folder, so a file changed in a shared folder goes
+ * back only to the turn that made it. A channel and its threads share one
+ * folder; when their turns overlap, a scan of the folder can't tell whose
+ * file is whose.
+ */
+export class TurnLog {
+  private turns = new Map<string, Map<string, { start: number; end: number | null }>>();
+
+  begin(workdir: string, key: string, now = Date.now()) {
+    let byKey = this.turns.get(workdir);
+    if (!byKey) this.turns.set(workdir, (byKey = new Map()));
+    byKey.set(key, { start: now, end: null });
+  }
+
+  end(workdir: string, key: string, now = Date.now()) {
+    const t = this.turns.get(workdir)?.get(key);
+    if (t && t.end === null) t.end = now;
+    this.prune(now);
+  }
+
+  /** Whether another turn in `workdir` ran at some point during `key`'s turn. */
+  overlapped(workdir: string, key: string, now = Date.now()): boolean {
+    const byKey = this.turns.get(workdir);
+    const me = byKey?.get(key);
+    if (!byKey || !me) return false;
+    const myEnd = me.end ?? now;
+    for (const [k, t] of byKey) {
+      if (k === key) continue;
+      if (t.start <= myEnd && (t.end ?? now) >= me.start) return true;
+    }
+    return false;
+  }
+
+  /** Forget turns that ended over an hour ago; no running turn can overlap them. */
+  private prune(now: number) {
+    for (const [dir, byKey] of this.turns) {
+      for (const [k, t] of byKey) if (t.end !== null && now - t.end > 60 * 60 * 1000) byKey.delete(k);
+      if (byKey.size === 0) this.turns.delete(dir);
+    }
+  }
+}
+
+/** One log for the whole process: every session in a folder shares it. */
+export const turnLog = new TurnLog();
+
+/**
+ * Of `changed` (files changed in the folder during a turn), the ones this
+ * turn can claim. Alone in the folder: all of them. Overlapping another
+ * turn: only those its answer or shell commands name (by path or file name);
+ * the rest are ambiguous and go to nobody rather than to everyone.
+ */
+export function claimChanged(changed: string[], workdir: string, alone: boolean, mentions: string): string[] {
+  if (alone) return changed;
+  return changed.filter((p) => {
+    const rel = relative(workdir, p);
+    // Whole names only: `b.svg` matches `> b.svg` or `./b.svg`, not `xb.svg.bak` or `sub/b.svg`.
+    return [p, rel, basename(p)].some((name) =>
+      new RegExp(`(^|[^\\w./-]|(?<![\\w.])\\./)${escapeRe(name)}($|[^\\w./-]|\\.(?!\\w))`).test(mentions),
+    );
+  });
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
  * The files to attach, in the order given. Relative paths resolve against
  * `workdir`. Skips anything missing, outside `workdir` (after following
  * symlinks), of another type, or past the size/count limits.
@@ -104,8 +171,8 @@ export function pickAttachments(paths: Iterable<string>, workdir: string): { fil
     }
     const rel = relative(root, real);
     if (!rel || rel.startsWith("..") || isAbsolute(rel)) continue;
-    // Files people sent on Discord: never echoed back.
-    if (rel === INBOX_DIR || rel.startsWith(`${INBOX_DIR}/`)) continue;
+    // Files people sent on a chat: never echoed back.
+    if (Object.values(INBOX_DIRS).some((dir) => rel === dir || rel.startsWith(`${dir}/`))) continue;
     if (seen.has(real)) continue;
     seen.add(real);
     if (files.length >= MAX_FILES || total + size > MAX_TOTAL_BYTES) {

@@ -17,6 +17,8 @@ export class TurnSummary {
   private prs = new Set<string>();
   private commits = new Set<string>();
   private files = new Set<string>();
+  /** Text of this turn's shell commands and their output (to tell which files it wrote). */
+  private shell: string[] = [];
 
   constructor(now = Date.now()) {
     this.startedAt = now;
@@ -25,6 +27,11 @@ export class TurnSummary {
   /** Paths of files edited or written this turn, in order. */
   get editedFiles(): string[] {
     return [...this.files];
+  }
+
+  /** What this turn's shell commands said, for finding the files they wrote. */
+  get shellText(): string {
+    return this.shell.join("\n");
   }
 
   /** An `item/started` item. */
@@ -44,7 +51,10 @@ export class TurnSummary {
     if (!stepLabel(item)) return;
     this.steps.add(item.id);
     if (item.status === "failed" || item.status === "declined" || (item.exitCode ?? 0) !== 0) this.failed++;
-    if (item.type === "commandExecution") this.scan(item.aggregatedOutput);
+    if (item.type === "commandExecution") {
+      this.scan(item.aggregatedOutput);
+      this.shell.push(String(item.command ?? ""), String(item.aggregatedOutput ?? ""));
+    }
     if (item.type === "fileChange" && item.status !== "declined") {
       for (const c of item.changes ?? []) if (c?.path) this.files.add(c.path);
     }

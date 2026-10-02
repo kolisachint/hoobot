@@ -1,0 +1,440 @@
+/**
+ * Slack surface, over Socket Mode (an outbound WebSocket: no public URL).
+ *
+ * - A space is a channel (top-level messages) or a thread in it
+ *   (`<channel>/<thread ts>`); each has its own conversation, as on Discord.
+ * - Mention the bot to call it. Slack has no message replies, so replying
+ *   to the bot isn't a call; mention it in a thread instead.
+ * - Context, files, `!` commands, approval buttons and the model menu work
+ *   as on Discord (src/core.ts, src/session.ts). Text is converted to Slack
+ *   mrkdwn on the way out (src/mrkdwn.ts).
+ */
+import { SocketModeClient } from "@slack/socket-mode";
+import { LogLevel, WebClient } from "@slack/web-api";
+import { readFileSync } from "node:fs";
+import { config, workdirFor } from "./config.ts";
+import { gatherContext, type MessageLike, type SpaceLike } from "./context.ts";
+import type { ChatSpace, Choice, Picked, Posted } from "./chat.ts";
+import { handleCall, helpText } from "./core.ts";
+import { fromMrkdwn, toMrkdwn } from "./mrkdwn.ts";
+import type { AttachmentLike, Fetcher } from "./inbound.ts";
+
+const HELP = helpText("Slack", "a menu");
+
+/**
+ * Slack takes 40k characters but cuts long messages off behind "Show more";
+ * and a section block holds 3000. Text is split before conversion, which
+ * adds a little (escaping, links).
+ */
+const MAX_LENGTH = 2900;
+
+/** A Slack message as the Web API returns it (the fields read here). */
+export type SlackMessage = {
+  ts: string;
+  thread_ts?: string;
+  user?: string;
+  bot_id?: string;
+  username?: string;
+  bot_profile?: { name?: string };
+  subtype?: string;
+  text?: string;
+  files?: SlackFile[];
+};
+
+export type SlackFile = {
+  name?: string;
+  title?: string;
+  mimetype?: string;
+  size?: number;
+  url_private_download?: string;
+  url_private?: string;
+};
+
+/** Message subtypes that are someone talking (others: joins, topic changes, ...). */
+const USER_SUBTYPES = new Set([undefined, "file_share", "thread_broadcast", "bot_message", "me_message"]);
+
+export function slackFiles(files: SlackFile[] | undefined): AttachmentLike[] {
+  return (files ?? [])
+    .filter((f) => f.url_private_download || f.url_private)
+    .map((f) => ({
+      name: f.name ?? f.title ?? null,
+      url: (f.url_private_download ?? f.url_private)!,
+      size: f.size ?? 0,
+      contentType: f.mimetype ?? null,
+    }));
+}
+
+/** A space id: the channel, or `<channel>/<thread ts>` for a thread. */
+export function slackSpaceId(channel: string, threadTs?: string | null): string {
+  return threadTs ? `${channel}/${threadTs}` : channel;
+}
+
+/** Remove the bot's mention; `null` when the text doesn't mention it. */
+export function stripMention(text: string, botUserId: string): string | null {
+  const re = new RegExp(`<@${botUserId}(?:\\|[^>]*)?>`, "g");
+  if (!re.test(text)) return null;
+  return text.replace(re, "").trim();
+}
+
+type Pending = { allowed: (userId: string) => boolean; resolve: (p: Picked) => void; choices: Choice[] };
+
+export class Slack {
+  readonly web: WebClient;
+  private socket: SocketModeClient;
+  private botUserId = "";
+  private names = new Map<string, Promise<string>>();
+  private channelNames = new Map<string, Promise<string>>();
+  /** Open buttons and menus, by the id in their action ids. */
+  private pending = new Map<string, Pending>();
+  /** Recent event ids, so a redelivered event isn't answered twice. */
+  private seen = new Set<string>();
+  private nonce = 0;
+
+  constructor(botToken: string, appToken: string) {
+    this.web = new WebClient(botToken, { logLevel: LogLevel.ERROR });
+    this.socket = new SocketModeClient({ appToken, logLevel: config.debug ? LogLevel.DEBUG : LogLevel.WARN });
+  }
+
+  /** Downloads Slack files: they need the bot token. */
+  readonly fetcher: Fetcher = (url) =>
+    fetch(url, { headers: { Authorization: `Bearer ${config.slackBotToken}` } }).then((res) => {
+      // Without `files:read`, Slack answers with its sign-in page instead of the file.
+      if (res.ok && res.headers.get("content-type")?.startsWith("text/html") && !/\.html?($|\?)/i.test(url)) {
+        throw new Error("Slack sent a web page instead of the file (does the app have the files:read scope?)");
+      }
+      return res;
+    });
+
+  async start(): Promise<void> {
+    const auth = await this.web.auth.test();
+    this.botUserId = String(auth.user_id);
+    this.socket.on("message", (e: any) => this.onEvent(e));
+    this.socket.on("interactive", (e: any) => this.onInteractive(e));
+    await this.socket.start();
+    console.log(`Slack: logged in as @${auth.user} in ${auth.team}`);
+  }
+
+  async stop(): Promise<void> {
+    await this.socket.disconnect().catch(() => {});
+  }
+
+  // ── Events ─────────────────────────────────────────────────────────────────
+
+  private async onEvent({ ack, event, envelope_id }: { ack: () => Promise<void>; event: any; envelope_id: string }) {
+    await ack().catch(() => {});
+    if (this.seen.has(envelope_id) || this.seen.has(`${event?.channel}:${event?.ts}`)) return;
+    this.remember(envelope_id);
+    this.remember(`${event?.channel}:${event?.ts}`);
+    try {
+      await this.onMessage(event);
+    } catch (err) {
+      console.error("slack message handler failed", err);
+      await this.web.chat
+        .postMessage({
+          channel: event.channel,
+          thread_ts: event.thread_ts,
+          text: "Something went wrong on my side. Check the bot's terminal.",
+        })
+        .catch(() => {});
+    }
+  }
+
+  private remember(key: string) {
+    this.seen.add(key);
+    if (this.seen.size > 2000) this.seen.delete(this.seen.values().next().value!);
+  }
+
+  private async onMessage(event: any) {
+    if (!event || event.bot_id || !event.user || event.user === this.botUserId) return;
+    if (!USER_SUBTYPES.has(event.subtype)) return;
+    // Channels and private channels only, like Discord's text channels.
+    if (event.channel_type !== "channel" && event.channel_type !== "group") return;
+    const channel: string = event.channel;
+    if (config.channelIds.size && !(config.channelIds.has(channel) || config.workspaces.has(channel))) return;
+
+    const text = stripMention(event.text ?? "", this.botUserId);
+    if (text === null) return;
+    console.log(`[slack] ${event.user} in ${channel}: ${String(event.text ?? "").slice(0, 80)}`);
+
+    const threadTs: string | undefined = event.thread_ts && event.thread_ts !== event.ts ? event.thread_ts : undefined;
+    const space = this.space(channel, threadTs);
+    const history = this.history(channel, threadTs);
+    await handleCall(
+      {
+        space,
+        userId: event.user,
+        author: await this.name(event.user),
+        messageId: event.ts,
+        text: fromMrkdwn(text, (id) => this.cachedName(id)),
+        files: slackFiles(event.files),
+        workdir: workdirFor(channel),
+        reply: (t) => space.send(t),
+        context: async ({ linked, seen }) =>
+          gatherContext({ space: await history, before: event.ts, botId: this.botUserId, linked, seen, surface: "slack" }),
+        fetcher: this.fetcher,
+      },
+      HELP,
+    );
+  }
+
+  // ── Spaces ─────────────────────────────────────────────────────────────────
+
+  /** A Slack channel or thread as a `ChatSpace`. */
+  space(channel: string, threadTs?: string): ChatSpace {
+    const web = this.web;
+    const posted = (ts: string | undefined): Posted => ({
+      edit: (text) => (ts ? web.chat.update({ channel, ts, text: toMrkdwn(text), blocks: [] }) : Promise.resolve()),
+      delete: () => (ts ? web.chat.delete({ channel, ts }) : Promise.resolve()),
+    });
+    return {
+      id: slackSpaceId(channel, threadTs),
+      surface: "slack",
+      label: "Slack",
+      maxLength: MAX_LENGTH,
+      maxChoices: 100,
+      async send(text, opts = {}) {
+        const files = opts.files ?? [];
+        if (files.length) {
+          // One message with the text and the files. Upload completes on
+          // Slack's side, so there's no message to edit later.
+          await web.filesUploadV2({
+            channel_id: channel,
+            ...(threadTs ? { thread_ts: threadTs } : {}),
+            initial_comment: toMrkdwn(text),
+            file_uploads: files.map((f) => ({ file: readFileSync(f.attachment), filename: f.name })),
+          });
+          return posted(undefined);
+        }
+        const res = await web.chat.postMessage({
+          channel,
+          ...(threadTs ? { thread_ts: threadTs } : {}),
+          text: toMrkdwn(text),
+          unfurl_links: false,
+          unfurl_media: false,
+        });
+        return posted(res.ts);
+      },
+      // Slack has no typing indicator for bots; the status line shows progress.
+      sendTyping: async () => {},
+      choose: async (text, kind, choices, timeoutMs, placeholder) => {
+        const id = String(++this.nonce);
+        const res = await web.chat.postMessage({
+          channel,
+          ...(threadTs ? { thread_ts: threadTs } : {}),
+          text: toMrkdwn(text),
+          blocks: choiceBlocks(id, toMrkdwn(text), kind, choices, placeholder),
+        });
+        const msg = posted(res.ts);
+        const pick = new Promise<Picked>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            this.pending.delete(id);
+            reject(new Error("timeout"));
+          }, timeoutMs);
+          this.pending.set(id, {
+            choices,
+            allowed: (u) => config.allowedUserIds.has(u),
+            resolve: (p) => {
+              clearTimeout(timer);
+              this.pending.delete(id);
+              resolve(p);
+            },
+          });
+        });
+        return { msg, pick };
+      },
+    };
+  }
+
+  /** Clicks on buttons and menus. */
+  private async onInteractive({ ack, body }: { ack: () => Promise<void>; body: any }) {
+    await ack().catch(() => {});
+    if (body?.type !== "block_actions") return;
+    const action = body.actions?.[0];
+    const [prefix, id] = String(action?.action_id ?? "").split(":");
+    if (prefix !== "hoo" || !id) return;
+    const channel = body.channel?.id ?? body.container?.channel_id;
+    const ts = body.message?.ts ?? body.container?.message_ts;
+    const pending = this.pending.get(id);
+    if (!pending) return; // answered, timed out, or from before a restart
+    const userId: string = body.user?.id;
+    if (!pending.allowed(userId)) {
+      await this.web.chat
+        .postEphemeral({
+          channel,
+          user: userId,
+          text: "Only allowed users can answer this.",
+          ...(body.message?.thread_ts ? { thread_ts: body.message.thread_ts } : {}),
+        })
+        .catch(() => {});
+      return;
+    }
+    const value: string | undefined = action.selected_option?.value ?? action.value;
+    if (value === undefined) return;
+    pending.resolve({
+      value,
+      user: body.user?.username ?? body.user?.name ?? (await this.name(userId)),
+      update: (text) => this.web.chat.update({ channel, ts, text: toMrkdwn(text), blocks: [] }),
+    });
+  }
+
+  // ── History (context) ──────────────────────────────────────────────────────
+
+  /** The space's history in the shape src/context.ts reads. */
+  async history(channel: string, threadTs?: string): Promise<SpaceLike> {
+    const name = await this.channelName(channel);
+    const channelHistory = {
+      id: channel,
+      messages: {
+        fetch: async ({ before, limit }: { before: string; limit: number }) => {
+          const res = await this.web.conversations.history({ channel, latest: before, inclusive: false, limit });
+          return this.toLike((res.messages ?? []) as SlackMessage[]);
+        },
+      },
+    };
+    if (!threadTs) {
+      return { ...channelHistory, name, isThread: () => false };
+    }
+    return {
+      id: slackSpaceId(channel, threadTs),
+      isThread: () => true,
+      threadStart: threadTs,
+      parent: { ...channelHistory, name },
+      messages: {
+        fetch: async ({ before, limit }) => {
+          const replies = (await this.replies(channel, threadTs, before)).filter((m) => m.ts !== threadTs);
+          return this.toLike(replies.slice(-limit));
+        },
+      },
+      fetchStarterMessage: async () => {
+        const res = await this.web.conversations.replies({ channel, ts: threadTs, limit: 1, inclusive: true });
+        const first = (res.messages ?? [])[0] as SlackMessage | undefined;
+        if (!first || first.ts !== threadTs) return null;
+        return (await this.toLike([first])).get(first.ts) ?? null;
+      },
+    };
+  }
+
+  /** A thread's replies before `before`, oldest first (all pages, up to 1000). */
+  private async replies(channel: string, ts: string, before: string): Promise<SlackMessage[]> {
+    const out: SlackMessage[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 5; page++) {
+      const res = await this.web.conversations.replies({ channel, ts, latest: before, inclusive: false, limit: 200, cursor });
+      out.push(...((res.messages ?? []) as SlackMessage[]));
+      cursor = res.response_metadata?.next_cursor || undefined;
+      if (!cursor || !res.has_more) break;
+    }
+    return out;
+  }
+
+  private async toLike(messages: SlackMessage[]): Promise<Map<string, MessageLike>> {
+    const out = new Map<string, MessageLike>();
+    const ids = [...new Set(messages.map((m) => m.user).filter((u): u is string => !!u))];
+    await Promise.all(ids.map((u) => this.name(u)));
+    for (const m of messages) out.set(m.ts, toMessageLike(m, (u) => this.cachedName(u)));
+    return out;
+  }
+
+  // ── Names ──────────────────────────────────────────────────────────────────
+
+  private resolved = new Map<string, string>();
+
+  private cachedName(userId: string): string | undefined {
+    return this.resolved.get(userId);
+  }
+
+  /** A user's display name (cached); their id when it can't be looked up. */
+  name(userId: string): Promise<string> {
+    let p = this.names.get(userId);
+    if (!p) {
+      p = this.web.users
+        .info({ user: userId })
+        .then((r: any) => {
+          const name = r.user?.profile?.display_name || r.user?.real_name || r.user?.name || userId;
+          this.resolved.set(userId, name);
+          return name;
+        })
+        .catch(() => userId);
+      this.names.set(userId, p);
+    }
+    return p;
+  }
+
+  private channelName(channel: string): Promise<string> {
+    let p = this.channelNames.get(channel);
+    if (!p) {
+      p = this.web.conversations
+        .info({ channel })
+        .then((r: any) => r.channel?.name ?? channel)
+        .catch(() => channel);
+      this.channelNames.set(channel, p);
+    }
+    return p;
+  }
+}
+
+/** A Slack message in the shape src/context.ts reads. */
+export function toMessageLike(m: SlackMessage, name: (userId: string) => string | undefined): MessageLike {
+  const bot = !!m.bot_id;
+  const username = (m.user && name(m.user)) || m.username || m.bot_profile?.name || m.user || "someone";
+  return {
+    id: m.ts,
+    // 0 = someone talking; 7 (any other) = joins, topic changes, ...
+    type: USER_SUBTYPES.has(m.subtype) ? 0 : 7,
+    author: { id: m.user ?? m.bot_id ?? "", bot, username },
+    member: null,
+    cleanContent: fromMrkdwn(m.text ?? "", name),
+    attachments: new Map(slackFiles(m.files).map((f, i) => [String(i), { name: f.name }])),
+    embeds: [],
+    createdTimestamp: Math.round(Number(m.ts) * 1000),
+  };
+}
+
+/** Block Kit for `choose`: the text, then buttons or a menu. */
+export function choiceBlocks(id: string, text: string, kind: "buttons" | "menu", choices: Choice[], placeholder?: string): any[] {
+  const plain = (t: string, max: number) => ({ type: "plain_text", text: t.length > max ? t.slice(0, max - 1) + "…" : t, emoji: true });
+  const section = { type: "section", text: { type: "mrkdwn", text: text.slice(0, 3000) } };
+  if (kind === "buttons") {
+    return [
+      section,
+      {
+        type: "actions",
+        elements: choices.map((c, i) => ({
+          type: "button",
+          action_id: `hoo:${id}:${i}`,
+          text: plain(c.label, 75),
+          value: c.value.slice(0, 2000),
+          ...(c.style ? { style: c.style } : {}),
+        })),
+      },
+    ];
+  }
+  const options = choices.slice(0, 100).map((c) => ({
+    text: plain(c.label, 75),
+    value: c.value.slice(0, 150),
+    ...(c.description ? { description: plain(c.description, 75) } : {}),
+  }));
+  const initial = choices.findIndex((c) => c.default);
+  return [
+    section,
+    {
+      type: "actions",
+      elements: [
+        {
+          type: "static_select",
+          action_id: `hoo:${id}:menu`,
+          placeholder: plain(placeholder ?? "Pick one", 150),
+          options,
+          ...(initial >= 0 && initial < options.length ? { initial_option: options[initial] } : {}),
+        },
+      ],
+    },
+  ];
+}
+
+/** Connect to Slack and answer calls; returns a stop function. */
+export async function startSlack(): Promise<() => Promise<void>> {
+  const slack = new Slack(config.slackBotToken!, config.slackAppToken!);
+  await slack.start();
+  return () => slack.stop();
+}

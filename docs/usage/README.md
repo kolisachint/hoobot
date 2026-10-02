@@ -19,9 +19,9 @@ check that a swap worked.
 
 **hoobot is only glue.** It:
 
-- captures Discord messages (mentions, replies to it, `!` commands, button clicks)
+- captures Discord and Slack messages (mentions, replies to it on Discord, `!` commands, button clicks)
   and what others said since it last read a channel or thread (`src/context.ts`);
-- maps each Discord channel or thread to one app-server thread (`src/links.ts`, stored
+- maps each Discord or Slack channel or thread to one app-server thread (`src/links.ts`, stored
   in `LINKS_FILE`);
 - turns server notifications into one status line and a final answer with a
   footer (`src/session.ts`, `src/summary.ts`), and approval requests into
@@ -55,11 +55,11 @@ approvals, and the first answer to an approval wins.
 
 ```sh
 bun install
-cp .env.example .env      # set DISCORD_TOKEN, ALLOWED_USER_IDS, optional GUILD_ID / CHANNEL_IDS
-bun start                 # prints "Connected to app-server ..." and "Logged in as hoo#1234"
+cp .env.example .env      # set DISCORD_TOKEN and/or SLACK_BOT_TOKEN + SLACK_APP_TOKEN, ALLOWED_USER_IDS
+bun start                 # prints "Discord: logged in as hoo#1234" / "Slack: logged in as @hoo in ..."
 ```
 
-In Discord:
+In Discord or Slack:
 
 - `@hoo list the files here`: starts a turn and answers in place.
 - Mention it or reply to it to continue; doing so while it is busy steers.
@@ -67,7 +67,7 @@ In Discord:
 - `!stop`, `!new`, `!model [part of name]`, `!verbose`, `!help`.
 - `!model` uses `model/list`. hoocode marks models outside your
   `enabledModels` as `hidden`, so the dropdown shows only those (Discord
-  allows 25). Codex has its own hidden flags. The pick is sent as `model`
+  allows 25, Slack 100). Codex has its own hidden flags. The pick is sent as `model`
   on every `turn/start` and saved in `LINKS_FILE`.
 
 ## How to swap
