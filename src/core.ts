@@ -7,6 +7,7 @@
  */
 import { config } from "./config.ts";
 import { CodexClient } from "./codex-client.ts";
+import { health, type SessionStatus } from "./health.ts";
 import { LinkStore } from "./links.ts";
 import { ThreadSession } from "./session.ts";
 import { buildPrompt, type ContextMessage } from "./context.ts";
@@ -137,6 +138,7 @@ export function helpText(label: string, menu: string): string {
 /** Handle a call: allow list, help, commands, else a prompt to the space's conversation. */
 export async function handleCall(call: Call, help: string): Promise<void> {
   const { space } = call;
+  health.message(space.surface);
   // Only allowed users can call the bot (everyone's messages still count as context).
   if (!call.peer && !config.allowedUserIds.has(call.userId)) {
     await call.reply("Sorry, you're not on this bot's allow list.");
@@ -213,8 +215,18 @@ export async function handleCall(call: Call, help: string): Promise<void> {
   });
 }
 
-/** Close every session and app-server. */
-export async function closeAll() {
+/** Every live conversation: which space, which folder, busy or not. */
+export function sessionStatus(): SessionStatus[] {
+  return [...sessions.entries()].map(([key, s]) => ({
+    key,
+    surface: s.thread.surface,
+    id: s.thread.id,
+    workdir: s.workdir,
+    busy: s.busy,
+  }));
+}
+
+/** Close every session and app-server. */export async function closeAll() {
   for (const s of [...sessions.values()]) s.close();
   await Promise.all([...apps.values()].map((app) => app.then((c) => c.close()).catch(() => {})));
 }

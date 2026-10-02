@@ -127,6 +127,38 @@ scripts/service.sh uninstall   # stop + remove
 
 The Mac must be awake and logged in for the bot to answer.
 
+## Several bots from one checkout
+
+`scripts/runtime.sh` runs one or more instances out of this repo, each with
+its own `runtime/<name>/` folder (`.env`, log, pid). Nothing in `runtime/`
+is committed.
+
+```sh
+scripts/runtime.sh init hee            # create runtime/hee/.env from .env.example
+scripts/runtime.sh list                # instances, running or not, health port
+scripts/runtime.sh start hoo           # run it from this working tree
+scripts/runtime.sh status hee          # pid + /healthz
+scripts/runtime.sh health hee          # the JSON, for a UI or a script
+scripts/runtime.sh restart hee         # after editing .env or code
+scripts/runtime.sh logs hee 100        # last 100 log lines
+scripts/runtime.sh stop hee
+```
+
+The bot runs `bun src/index.ts` from the repo, so an edit is one `restart`
+from the chat. `RUN_FROM_NPM=1 scripts/runtime.sh start hoo` runs the
+published build instead. `scripts/service.sh` (launchd, above) is the other
+way to keep one instance alive at login; use one supervisor per instance.
+
+## Health and the future UI
+
+Every instance serves a read-only HTTP server on `127.0.0.1` (`HEALTH_PORT`,
+8787 by default, `off` to disable) — the seam the desktop UI will use.
+
+```sh
+curl -s localhost:8787/healthz   # ok, uptime, pid, surfaces, last message
+curl -s localhost:8787/api/bots  # + work folders, links file, live sessions
+```
+
 ## Using it
 
 Every channel and every thread is a shared space where people and the bot
@@ -235,7 +267,10 @@ the thread; the first answer wins and the others see it resolved.
 | `src/attachments.ts` | Picks written files to attach to the answer |
 | `src/inbound.ts` | Saves files sent on Discord or Slack into the work folder for the prompt |
 | `src/format.ts` | Splits long replies to fit the chat's message limit |
+| `src/health.ts` | `/healthz` and `/api/bots` on 127.0.0.1: liveness, config, live sessions |
+| `scripts/runtime.sh` | `init`/`start`/`stop`/`restart`/`status`/`health`/`logs` for one instance in `runtime/<name>/` |
 | `workspace/` | hoocode's working folder (git-ignored); sessions are saved by hoocode |
+| `runtime/` | Local instances: `.env`, logs, pids, shared work folder (git-ignored) |
 
 ## Tests
 

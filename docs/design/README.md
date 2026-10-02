@@ -53,6 +53,7 @@ The Markdown files are the source of truth.
 | 16 | [16-roles.md](16-roles.md) | **Roles: hoocode vs hoobot** | decided |
 | 17 | [17-architecture-review.md](17-architecture-review.md) | **Options A–F, why B+** | decided |
 | 18 | [18-current-step.md](18-current-step.md) | **Current step: Rust hoocode, MIT only** | decided |
+| 19 | [19-run-layout-and-desktop.md](19-run-layout-and-desktop.md) | Runtime folder merge + desktop UI plan | decided |
 
 ## Decision log
 
@@ -122,3 +123,7 @@ Superseded rows are kept and struck through, with the row that replaces them.
 | 2026-10-01 | R26: unimplemented methods → `method not found`, except neutral results for what a recorded `codex --remote` session calls | "Just what we need" while the Codex TUI still connects |
 | 2026-10-01 | R27: MIT = our code; deps must be permissive and MIT-compatible; nothing copied from Codex; Codex schemas generated at test time only | Settles T7.2–T7.3 (reading Codex source for behaviour is fine; copying is not) |
 | 2026-10-01 | R28: hoobot stays TypeScript on Bun; reaches the socket with `ws+unix://` | Settles T7.4; Bun supports WebSocket over a Unix socket |
+| **Run layout** | | |
+| 2026-10-02 | P1: runtime lives in `hoobot/runtime/<name>/`, gitignored; copy the *shape* of `hoobot-run`, regenerate the workspace | One place to edit code and run bots; keeps 63 MB of state and live tokens out of git and npm |
+| 2026-10-02 | P2: `scripts/runtime.sh` supersedes per-instance start/stop scripts; runs from the working tree (`RUN_FROM_NPM=1` for the published build) | One parameterised supervisor; an edit is one `restart` from the chat |
+| 2026-10-02 | P3: `/healthz` + `/api/bots` on 127.0.0.1 per instance (`HEALTH_PORT`) | Liveness for the desktop UI and for scripts; the UI's first endpoint |
