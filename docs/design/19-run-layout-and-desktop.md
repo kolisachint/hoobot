@@ -1,8 +1,8 @@
 # 19 — Run layout (merge `hoobot-run`?) + desktop UI plan
 
 Status: **decided, 2026-10-02** (landed in `feat/runtime-layout`).
-**Open:** the desktop UI itself — the web UI on `127.0.0.1` is served by
-hoobot, and `/api/bots` is its first endpoint. See "What landed" below.
+The desktop UI itself is now built: [20-bot-manager-ui.md](20-bot-manager-ui.md)
+is the manager — `bun run manager`, a web page on `127.0.0.1:8790`.
 
 ## What landed (2026-10-02)
 

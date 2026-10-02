@@ -54,6 +54,7 @@ The Markdown files are the source of truth.
 | 17 | [17-architecture-review.md](17-architecture-review.md) | **Options A–F, why B+** | decided |
 | 18 | [18-current-step.md](18-current-step.md) | **Current step: Rust hoocode, MIT only** | decided |
 | 19 | [19-run-layout-and-desktop.md](19-run-layout-and-desktop.md) | Runtime folder merge + desktop UI plan | decided |
+| 20 | [20-bot-manager-ui.md](20-bot-manager-ui.md) | **The bot manager: listing, creating, starting bots** | built |
 
 ## Decision log
 

@@ -19,7 +19,9 @@
 set -eu
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-RUNTIME="$REPO/runtime"
+# HOOBOT_RUNTIME_DIR lets the bot manager (and the tests) point the script at
+# another runtime folder; the default is the repo's own.
+RUNTIME="${HOOBOT_RUNTIME_DIR:-$REPO/runtime}"
 EXAMPLE="$REPO/.env.example"
 
 die() { echo "runtime: $*" >&2; exit 1; }

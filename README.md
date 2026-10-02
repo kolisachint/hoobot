@@ -149,10 +149,38 @@ from the chat. `RUN_FROM_NPM=1 scripts/runtime.sh start hoo` runs the
 published build instead. `scripts/service.sh` (launchd, above) is the other
 way to keep one instance alive at login; use one supervisor per instance.
 
-## Health and the future UI
+## The bot manager (UI)
+
+```sh
+bun run manager --open     # http://127.0.0.1:8790
+```
+
+A local page that lists your bots, and lets you make more:
+
+- **New bot** — a suggested name, a generated avatar (shape and colour, both
+  changeable), which chat or chats it joins, its tokens and its working
+  folder. It doesn't start on its own: add a token, press Start.
+- **Start / Stop / Restart** — the same `scripts/runtime.sh` commands you'd
+  type. If a bot won't boot, you get the last lines of its log, not a
+  spinner.
+- **Settings** — every `.env` key, grouped and explained, saved as you type.
+  Tokens show as a mask and are never sent back to the page.
+- **Status** — each bot's own `/healthz`: which chats are connected, its
+  model, approvals, pid, uptime, live threads, and a tail of its log.
+
+There is no database: `runtime/<name>/.env` *is* the configuration, so the
+UI and your editor can never disagree, and comments in the file survive an
+edit from the page. Avatars are generated from a seed (`HOO_AVATAR_SEED`),
+so a bot keeps its face with no image stored anywhere.
+
+`MANAGER_PORT=off` disables it; the page is served from `web/` with no build
+step. Design: [docs/design/20-bot-manager-ui.md](docs/design/20-bot-manager-ui.md).
+
+## Health
 
 Every instance serves a read-only HTTP server on `127.0.0.1` (`HEALTH_PORT`,
-8787 by default, `off` to disable) — the seam the desktop UI will use.
+8787 by default, `off` to disable). The bot manager is built on it, and so
+can be your own scripts.
 
 ```sh
 curl -s localhost:8787/healthz   # ok, uptime, pid, surfaces, last message
@@ -268,6 +296,10 @@ the thread; the first answer wins and the others see it resolved.
 | `src/inbound.ts` | Saves files sent on Discord or Slack into the work folder for the prompt |
 | `src/format.ts` | Splits long replies to fit the chat's message limit |
 | `src/health.ts` | `/healthz` and `/api/bots` on 127.0.0.1: liveness, config, live sessions |
+| `src/manager.ts` | The bot manager: its API, and the page from `web/` on 127.0.0.1:8790 |
+| `src/instances.ts` | `runtime/<name>/.env` read/write, list, create, delete; the fields the UI shows |
+| `src/avatar.ts` | A seed → an inline SVG avatar (circle or squircle, six palettes) |
+| `web/` | The manager page: `index.html`, `app.js`, `style.css` — no build step |
 | `scripts/runtime.sh` | `init`/`start`/`stop`/`restart`/`status`/`health`/`logs` for one instance in `runtime/<name>/` |
 | `workspace/` | hoocode's working folder (git-ignored); sessions are saved by hoocode |
 | `runtime/` | Local instances: `.env`, logs, pids, shared work folder (git-ignored) |
@@ -283,6 +315,9 @@ APP_SERVER="stdio:codex app-server" bun test/session.e2e.ts   # same, real Codex
 bun run typecheck
 bun run check               # typecheck + unit tests
 ```
+
+The manager's page is plain browser JavaScript, so `tsc` does not check it;
+`bun build web/app.js --target=browser` does.
 
 ## Releasing
 
