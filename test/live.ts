@@ -3,6 +3,7 @@
 import { ChannelType, Client, GatewayIntentBits, type TextChannel } from "discord.js";
 const { config, prepareWorkspace } = await import("../src/config.ts");
 const { ThreadSession } = await import("../src/session.ts");
+const { discordSpace } = await import("../src/discord.ts");
 const { CodexClient } = await import("../src/codex-client.ts");
 const { LinkStore } = await import("../src/links.ts");
 prepareWorkspace();
@@ -28,7 +29,7 @@ console.log("thread:", thread.url);
 
 let closed!: () => void;
 const done = new Promise<void>((r) => (closed = r));
-const s = new ThreadSession(thread, app, links, () => closed());
+const s = new ThreadSession(discordSpace(thread), app, links, () => closed());
 const t0 = Date.now();
 await s.prompt(
   "Live test from the bot's installer. Without using any tools, reply in two short lines: " +

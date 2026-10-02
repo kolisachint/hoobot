@@ -1,4 +1,4 @@
-// ThreadSession output with a fake app-server and a fake Discord thread.
+// ThreadSession output with a fake app-server and a fake chat space.
 import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 
@@ -35,25 +35,39 @@ function fakeThread(pick?: string) {
   const sent: string[] = [];
   const menus: any[] = [];
   const deleted: string[] = [];
+  const replies: (string | null)[] = [];
+  const uploads: string[][] = [];
+  const posted = (text: string) => ({
+    edit: async (t: string) => void (sent[sent.indexOf(text)] = t),
+    delete: async () => void deleted.push(text),
+  });
   const thread = {
     id: "d1",
+    surface: "discord" as const,
+    label: "Discord",
+    maxLength: 2000,
+    maxChoices: 25,
     sent,
     deleted,
     menus,
-    async send(c: any) {
-      const text = typeof c === "string" ? c : c.content;
+    replies,
+    uploads,
+    async send(text: string, opts: any = {}) {
       sent.push(text);
-      if (c?.components) menus.push(c.components[0].toJSON().components[0]);
-      return {
-        edit: async (t: any) => void (sent[sent.indexOf(text)] = typeof t === "string" ? t : t.content),
-        delete: async () => void deleted.push(text),
-        awaitMessageComponent: async () => {
-          if (!pick) throw new Error("timeout");
-          return { values: [pick], update: async (u: any) => void sent.push(u.content) };
-        },
-      };
+      if (opts.replyTo) replies.push(opts.replyTo);
+      if (opts.files?.length) uploads.push(opts.files.map((f: any) => f.name));
+      return posted(text);
     },
     async sendTyping() {},
+    async choose(text: string, kind: string, choices: any[]) {
+      sent.push(text);
+      if (kind === "menu") menus.push({ options: choices });
+      const pickP = pick
+        ? Promise.resolve({ value: pick, user: "tester", update: async (t: string) => void sent.push(t) })
+        : Promise.reject(new Error("timeout"));
+      pickP.catch(() => {});
+      return { msg: posted(text), pick: pickP };
+    },
   };
   return thread;
 }
@@ -163,13 +177,7 @@ test("!model kimi with two matches shows a dropdown of just those", async () => 
 
 test("the answer replies to the caller; the read position is saved and survives a restart", async () => {
   const server = new FakeServer();
-  const replies: any[] = [];
   const thread: any = fakeThread();
-  const plainSend = thread.send;
-  thread.send = async (c: any) => {
-    if (c?.reply) replies.push(c.reply.messageReference);
-    return plainSend(c);
-  };
   const path = linksPath("seen");
   let s = new ThreadSession(thread, server as any, new LinkStore(path), () => {});
   expect(await s.readState()).toEqual({ linked: false, seen: null });
@@ -179,7 +187,7 @@ test("the answer replies to the caller; the read position is saved and survives 
   server.notify("turn/completed", { turn: { id: "u1", status: "completed" } });
   await tick();
   s.close();
-  expect(replies).toEqual(["555"]);
+  expect(thread.replies).toEqual(["555"]);
 
   s = new ThreadSession(thread, server as any, new LinkStore(path), () => {});
   expect(await s.readState()).toEqual({ linked: true, seen: "555" });
@@ -199,12 +207,6 @@ test("files written this turn are attached to the answer", async () => {
   writeFileSync(join(dir, "app.ts"), "x");
   const server = new FakeServer();
   const thread: any = fakeThread();
-  const uploads: string[][] = [];
-  const plainSend = thread.send;
-  thread.send = async (c: any) => {
-    if (c?.files) uploads.push(c.files.map((f: any) => f.name));
-    return plainSend(c);
-  };
   const s = new ThreadSession(thread, server as any, new LinkStore(linksPath("att")), () => {}, dir);
   await s.prompt("make a page");
   for (const path of ["page.html", "app.ts"]) {
@@ -216,7 +218,7 @@ test("files written this turn are attached to the answer", async () => {
   server.notify("turn/completed", { turn: { id: "u1", status: "completed" } });
   await tick();
   s.close();
-  expect(uploads).toEqual([["page.html"]]);
+  expect(thread.uploads).toEqual([["page.html"]]);
   expect(thread.sent.at(-1)).toStartWith("Wrote page.html.");
 });
 
@@ -230,12 +232,6 @@ test("a real-shaped fileChange and a file written by a shell command are both at
   utimesSync(join(dir, "old.html"), old, old);
   const server = new FakeServer();
   const thread: any = fakeThread();
-  const uploads: string[][] = [];
-  const plainSend = thread.send;
-  thread.send = async (c: any) => {
-    if (c?.files) uploads.push(c.files.map((f: any) => f.name));
-    return plainSend(c);
-  };
   const s = new ThreadSession(thread, server as any, new LinkStore(linksPath("fc")), () => {}, dir);
   await s.prompt("make pages");
   // hoocode's `write` → fileChange with an absolute path (items.rs).
@@ -252,5 +248,51 @@ test("a real-shaped fileChange and a file written by a shell command are both at
   server.notify("turn/completed", { turn: { id: "u1", status: "completed" } });
   await tick();
   s.close();
-  expect(uploads).toEqual([["index.html", "chart.svg"]]);
+  expect(thread.uploads).toEqual([["index.html", "chart.svg"]]);
+});
+
+test("a channel and its thread working in one folder at once each get only their own files", async () => {
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "hoobot-session-two-"));
+  // One server, two app-server threads (t1 for the channel, t2 for the thread).
+  class TwoThreads extends FakeServer {
+    n = 0;
+    override async request(method: string, params: any): Promise<any> {
+      if (method === "thread/start") return { thread: { id: `t${++this.n}`, turns: [] }, model: "m" };
+      if (method === "turn/start") return { turn: { id: `u-${params.threadId}` } };
+      return super.request(method, params);
+    }
+  }
+  const server = new TwoThreads();
+  const space = (id: string) => {
+    const t: any = fakeThread();
+    t.id = id;
+    return t;
+  };
+  const chan = space("chan");
+  const thr = space("thr");
+  const links = new LinkStore(linksPath("two"));
+  const a = new ThreadSession(chan, server as any, links, () => {}, dir);
+  const b = new ThreadSession(thr, server as any, links, () => {}, dir);
+  await a.prompt("make a");
+  await b.prompt("make b");
+  writeFileSync(join(dir, "a.html"), "a");
+  writeFileSync(join(dir, "b.svg"), "b");
+  const cmd = (threadId: string, command: string) =>
+    server.emit("notification", {
+      method: "item/completed",
+      params: { threadId, item: { type: "commandExecution", id: "c", command, status: "completed", exitCode: 0, aggregatedOutput: "" } },
+    });
+  cmd("t1", "python gen.py > a.html");
+  cmd("t2", "python gen.py > b.svg");
+  for (const t of ["t1", "t2"]) {
+    server.emit("notification", { method: "turn/completed", params: { threadId: t, turn: { id: `u-${t}`, status: "completed" } } });
+  }
+  await tick();
+  a.close();
+  b.close();
+  expect(chan.uploads).toEqual([["a.html"]]);
+  expect(thr.uploads).toEqual([["b.svg"]]);
 });

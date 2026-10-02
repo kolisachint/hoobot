@@ -1,47 +1,44 @@
 /**
- * One Discord space (a channel or a thread) ⇄ one app-server thread. Translates Codex app-server
- * notifications into Discord messages and approval requests into buttons.
+ * One chat space (a Discord or Slack channel or thread) ⇄ one app-server
+ * thread. Translates Codex app-server notifications into chat messages and
+ * approval requests into buttons. Knows nothing about Discord or Slack
+ * itself: it talks to a `ChatSpace` (src/chat.ts).
  * Uses only standard Codex methods, so it works against `hoocode app-server`
  * and the real `codex app-server` alike.
  */
-import {
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  ComponentType,
-  StringSelectMenuBuilder,
-  type Message,
-} from "discord.js";
 import { config } from "./config.ts";
+import type { ChatSpace, Choice, Posted } from "./chat.ts";
+import { idOrder } from "./context.ts";
 import { code, describeTool, splitMessage, truncate } from "./format.ts";
 import { CodexClient, RpcError, userInput, type Notification, type RequestId, type ServerRequest } from "./codex-client.ts";
 import type { LinkStore } from "./links.ts";
 import { TurnSummary } from "./summary.ts";
-import { changedSince, pathsInText, pickAttachments, type Attachment } from "./attachments.ts";
-
-/** The bits of a Discord thread this file uses (tests pass a fake). */
-export interface ThreadLike {
-  id: string;
-  /** Resolves to a message with `edit` and `delete`. */
-  send(content: any): Promise<any>;
-  sendTyping(): Promise<unknown>;
-}
+import {
+  changedSince,
+  claimChanged,
+  MAX_FILES,
+  MAX_TOTAL_BYTES,
+  pathsInText,
+  pickAttachments,
+  turnLog,
+  type Attachment,
+} from "./attachments.ts";
 
 type ToolLine = { id: string; text: string; state: "running" | "ok" | "error" | "declined" };
 
-type Approval = { msg: Message | null; title: string; resolved: boolean };
+type Approval = { msg: Posted | null; title: string; resolved: boolean };
 
 export class ThreadSession {
   private threadId: string | null = null;
   private turnId: string | null = null;
   private tools: ToolLine[] = [];
-  private progressMsg: Message | null = null;
+  private progressMsg: Posted | null = null;
   private progressDirty = false;
   private progressTimer: ReturnType<typeof setInterval>;
   /** Show every tool step and in-between message (`!verbose`). Off: status line + final answer. */
   private verbose = false;
   /** The running turn's summary and its status-line message. */
-  private live: { summary: TurnSummary; msg: Message | null; at: number } | null = null;
+  private live: { summary: TurnSummary; msg: Posted | null; at: number } | null = null;
   /** Latest agent message of the running turn; posted when the turn ends. */
   private answer: string | null = null;
   private typingTimer: ReturnType<typeof setInterval> | null = null;
@@ -49,21 +46,21 @@ export class ThreadSession {
   private approvals = new Map<RequestId, Approval>();
   /** The model the server reports for the thread. */
   private model: string | null = null;
-  /** The model picked for this Discord thread (`!model`), saved in the link. */
+  /** The model picked for this space (`!model`), saved in the link. */
   private chosenModel: string | null = null;
-  /** Last Discord message the conversation has read; saved in the link. */
+  /** Last chat message the conversation has read; saved in the link. */
   private seenId: string | null = null;
   /** Whether the space had a conversation before this session opened. */
   private wasLinked = false;
   /** The message that started the running turn; the answer replies to it. */
   private caller: { id: string } | null = null;
-  /** Serialises Discord sends so replies stay in order. */
+  /** Serialises chat sends so replies stay in order. */
   private queue: Promise<unknown> = Promise.resolve();
   private ready: Promise<void> | null = null;
   private closed = false;
 
   constructor(
-    readonly thread: ThreadLike,
+    readonly thread: ChatSpace,
     private readonly client: CodexClient,
     private readonly links: LinkStore,
     private onClose: (threadId: string) => void,
@@ -77,7 +74,7 @@ export class ThreadSession {
   }
 
   private get linkKey() {
-    return `discord:${this.thread.id}`;
+    return `${this.thread.surface}:${this.thread.id}`;
   }
 
   get busy() {
@@ -137,7 +134,7 @@ export class ThreadSession {
 
   /** Everything up to `messageId` has been sent to the conversation. */
   markSeen(messageId: string) {
-    if (this.seenId && BigInt(this.seenId) >= BigInt(messageId)) return;
+    if (this.seenId && idOrder(this.seenId, messageId) >= 0) return;
     this.seenId = messageId;
     this.wasLinked = true;
     this.saveLink();
@@ -152,10 +149,10 @@ export class ThreadSession {
     if (running) this.beginTurn(running.id);
   }
 
-  // ── Input from Discord ─────────────────────────────────────────────────────
+  // ── Input from chat ────────────────────────────────────────────────────────
 
   /**
-   * `caller`: the Discord message this answers; the final answer replies to it.
+   * `caller`: the chat message this answers; the final answer replies to it.
    * Resolves true when the server took the message (a new turn or a steer).
    */
   async prompt(text: string, images: { data: string; mimeType: string }[] = [], caller?: { id: string }): Promise<boolean> {
@@ -208,6 +205,7 @@ export class ThreadSession {
     }
     if (this.threadId) await this.client.request("thread/unsubscribe", { threadId: this.threadId }).catch(() => {});
     this.turnId = null;
+    turnLog.end(this.workdir, this.linkKey);
     // The new conversation knows nothing: the next call reads the last 30 again.
     this.seenId = null;
     this.wasLinked = false;
@@ -267,38 +265,22 @@ export class ThreadSession {
       return;
     }
     const current = this.chosenModel ?? this.model;
-    const shown = models.slice(0, 25);
-    const menu = new StringSelectMenuBuilder()
-      .setCustomId("model")
-      .setPlaceholder("Pick a model")
-      .addOptions(
-        shown.map((m) => ({
-          label: truncate(m.label, 100),
-          value: m.value.slice(0, 100),
-          description: m.label === m.value ? undefined : truncate(m.value, 100),
-          default: m.value === current || m.value.endsWith(`/${current}`),
-        })),
-      );
+    const shown = models.slice(0, this.thread.maxChoices);
+    const choices: Choice[] = shown.map((m) => ({
+      label: truncate(m.label, 75),
+      value: m.value.slice(0, 100),
+      description: m.label === m.value ? undefined : truncate(m.value, 75),
+      default: m.value === current || m.value.endsWith(`/${current}`),
+    }));
     const more = models.length > shown.length ? `\nShowing ${shown.length} of ${models.length}; narrow it with \`!model <part of name>\`.` : "";
     const title = `**Model:** ${code(current ?? "default")}. Pick one for this thread (from the next message):${more}`;
-    const msg = (await this.enqueue(() =>
-      this.thread.send({ content: title, components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu)] }),
-    )) as Message;
+    const { msg, pick } = await this.enqueue(() => this.thread.choose(title, "menu", choices, 5 * 60_000, "Pick a model"));
     try {
-      const pick = await msg.awaitMessageComponent({
-        componentType: ComponentType.StringSelect,
-        time: 5 * 60_000,
-        filter: async (i) => {
-          if (config.allowedUserIds.has(i.user.id)) return true;
-          await i.reply({ content: "Only allowed users can change the model.", ephemeral: true }).catch(() => {});
-          return false;
-        },
-      });
-      const name = pick.values[0]!;
-      this.applyModel(name);
-      await pick.update({ content: modelSetText(name), components: [] });
+      const picked = await pick;
+      this.applyModel(picked.value);
+      await picked.update(modelSetText(picked.value));
     } catch {
-      await msg.edit({ content: `**Model:** ${code(this.chosenModel ?? this.model ?? "default")} (not changed)`, components: [] }).catch(() => {});
+      await msg.edit(`**Model:** ${code(this.chosenModel ?? this.model ?? "default")} (not changed)`).catch(() => {});
     }
   }
 
@@ -345,11 +327,12 @@ export class ThreadSession {
     this.dispose();
   }
 
-  // ── Output to Discord ──────────────────────────────────────────────────────
+  // ── Output to chat ─────────────────────────────────────────────────────────
 
   private beginTurn(turnId: string) {
     if (this.turnId === turnId) return;
     this.turnId = turnId;
+    turnLog.begin(this.workdir, this.linkKey);
     this.tools = [];
     this.progressMsg = null;
     this.live = { summary: new TurnSummary(), msg: null, at: 0 };
@@ -373,6 +356,7 @@ export class ThreadSession {
       case "turn/completed": {
         if (p.turn.id !== this.turnId) break;
         this.turnId = null;
+        turnLog.end(this.workdir, this.linkKey);
         this.stopTyping();
         await this.flushProgress();
         await this.finishTurn(p.turn);
@@ -403,7 +387,7 @@ export class ThreadSession {
           await this.flushProgress();
           this.progressMsg = null;
           this.tools = [];
-          for (const chunk of splitMessage(item.text)) await this.post(chunk);
+          for (const chunk of this.split(item.text)) await this.post(chunk);
           break;
         }
         const t = this.tools.find((x) => x.id === item.id);
@@ -442,7 +426,14 @@ export class ThreadSession {
               ...status.summary.editedFiles,
               ...pathsInText(answer ?? ""),
               // Whole seconds: some filesystems store mtimes that coarse.
-              ...changedSince(this.workdir, Math.floor(status.summary.startedAt / 1000) * 1000),
+              // A channel and its threads share the folder: when another turn ran
+              // there too, only files this turn names are its own.
+              ...claimChanged(
+                changedSince(this.workdir, Math.floor(status.summary.startedAt / 1000) * 1000),
+                this.workdir,
+                !turnLog.overlapped(this.workdir, this.linkKey),
+                `${answer ?? ""}\n${status.summary.shellText}`,
+              ),
             ],
             this.workdir,
           )
@@ -455,11 +446,11 @@ export class ThreadSession {
       parts.push("Done.");
     }
     if (parts.length) {
-      const chunks = splitMessage(parts.join("\n\n"));
+      const chunks = this.split(parts.join("\n\n"));
       const last = chunks.length - 1;
-      if (footer && chunks[last]!.length + footer.length + 1 <= 2000) chunks[last] += `\n${footer}`;
+      if (footer && chunks[last]!.length + footer.length + 1 <= this.thread.maxLength) chunks[last] += `\n${footer}`;
       else if (footer) chunks.push(footer);
-      // The first chunk is a Discord reply to the message that asked.
+      // The first chunk replies to the message that asked.
       for (const [i, chunk] of chunks.entries()) await this.post(chunk, i === 0 ? caller : null, i === chunks.length - 1 ? files : []);
     } else if (footer && !this.verbose && turn.status !== "interrupted") {
       await this.post(footer, caller, files);
@@ -467,7 +458,7 @@ export class ThreadSession {
       await this.post("Files:", caller, files);
     }
     if (skipped.length) {
-      await this.post(`-# Not attached (over Discord's 10 files / 10 MB): ${skipped.map((s) => code(s)).join(", ")}`);
+      await this.post(`-# Not attached (over ${MAX_FILES} files / ${Math.floor(MAX_TOTAL_BYTES / 1024 / 1024)} MB per answer): ${skipped.map((s) => code(s)).join(", ")}`);
     }
     // Queued after any in-flight status send, so that message exists by now.
     if (status) await this.enqueue(async () => status.msg?.delete()).catch(() => {});
@@ -499,7 +490,7 @@ export class ThreadSession {
     const lines = this.tools.slice(-15).map((t) => `${label[t.state]} · ${t.text}`);
     const hidden = this.tools.length - 15;
     if (hidden > 0) lines.unshift(`*…${hidden} earlier steps*`);
-    const body = lines.join("\n").slice(-1900);
+    const body = lines.join("\n").slice(-(this.thread.maxLength - 100));
     await this.enqueue(async () => {
       if (this.progressMsg) await this.progressMsg.edit(body).catch(() => {});
       else this.progressMsg = await this.thread.send(body);
@@ -515,7 +506,7 @@ export class ThreadSession {
 
   private async handleRequest(r: ServerRequest) {
     if (r.method !== "item/commandExecution/requestApproval" && r.method !== "item/fileChange/requestApproval") {
-      // Not something Discord can answer; say no rather than leave it hanging.
+      // Not something a chat can answer; say no rather than leave it hanging.
       this.client.respond(r.id, { decision: "decline" });
       return;
     }
@@ -532,14 +523,13 @@ export class ThreadSession {
     this.approvals.set(r.id, approval);
 
     // No "always" button: it would change hoocode's global config.
-    const options = [
-      { label: "Allow once", decision: "accept", style: ButtonStyle.Success },
-      { label: "Deny", decision: "decline", style: ButtonStyle.Danger },
+    const options: Choice[] = [
+      { label: "Allow once", value: "accept", style: "primary" },
+      { label: "Deny", value: "decline", style: "danger" },
     ];
-    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      options.map((o, i) => new ButtonBuilder().setCustomId(`ui:${i}`).setLabel(o.label).setStyle(o.style)),
+    const { msg, pick } = await this.enqueue(() =>
+      this.thread.choose(title.slice(0, 1800), "buttons", options, config.approvalTimeoutMs),
     );
-    const msg = (await this.enqueue(() => this.thread.send({ content: title.slice(0, 1800), components: [row] }))) as Message;
     approval.msg = msg;
     this.stopTyping();
     if (approval.resolved) {
@@ -548,23 +538,15 @@ export class ThreadSession {
       return;
     }
     try {
-      const click = await msg.awaitMessageComponent({
-        componentType: ComponentType.Button,
-        time: config.approvalTimeoutMs,
-        filter: async (i) => {
-          if (config.allowedUserIds.has(i.user.id)) return true;
-          await i.reply({ content: "Only allowed users can answer this.", ephemeral: true }).catch(() => {});
-          return false;
-        },
-      });
+      const click = await pick;
       if (approval.resolved) {
-        await click.update({ content: `${title.slice(0, 1800)}\n→ **Answered elsewhere.**`, components: [] }).catch(() => {});
+        await click.update(`${title.slice(0, 1800)}\n→ **Answered elsewhere.**`).catch(() => {});
         return;
       }
-      const chosen = options[Number(click.customId.split(":")[1])]!;
+      const chosen = options.find((o) => o.value === click.value) ?? options[1]!;
       approval.resolved = true;
-      this.client.respond(r.id, { decision: chosen.decision });
-      await click.update({ content: `${title.slice(0, 1800)}\n→ **${chosen.label}** by ${click.user.username}`, components: [] });
+      this.client.respond(r.id, { decision: chosen.value });
+      await click.update(`${title.slice(0, 1800)}\n→ **${chosen.label}** by ${click.user}`);
     } catch {
       if (approval.resolved) return;
       approval.resolved = true;
@@ -585,27 +567,27 @@ export class ThreadSession {
   }
 
   private async markResolved(approval: Approval, note: string) {
-    await approval.msg?.edit({ content: `${approval.title.slice(0, 1800)}\n→ ${note}`, components: [] }).catch(() => {});
+    await approval.msg?.edit(`${approval.title.slice(0, 1800)}\n→ ${note}`).catch(() => {});
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
-  /** `replyTo`: post as a Discord reply to that message (no ping); plain send if it's gone. */
+  /** Long text in pieces that fit one message. */
+  private split(text: string): string[] {
+    return splitMessage(text, this.thread.maxLength - 100);
+  }
+
+  /** `replyTo`: post as a reply to that message (no ping); plain send if it's gone. */
   private post(text: string, replyTo?: { id: string } | null, files: Attachment[] = []) {
     if (!text.trim()) return Promise.resolve();
-    const message = (withFiles: boolean) => ({
-      content: text,
-      ...(replyTo ? { reply: { messageReference: replyTo.id, failIfNotExists: false }, allowedMentions: { repliedUser: false } } : {}),
-      ...(withFiles ? { files } : {}),
-    });
+    const opts = { replyTo: replyTo?.id ?? null };
     const send = () =>
-      !replyTo && !files.length
-        ? this.thread.send(text)
-        : this.thread.send(message(files.length > 0)).catch(async (err: unknown) => {
-            if (!files.length) throw err;
-            // e.g. over this server's upload limit: still post the text.
+      !files.length
+        ? this.thread.send(text, opts)
+        : this.thread.send(text, { ...opts, files }).catch(async (err: unknown) => {
+            // e.g. over the upload limit: still post the text.
             console.error(`[${this.thread.id}] upload failed`, err);
-            await this.thread.send(message(false));
+            await this.thread.send(text, opts);
             return this.thread.send(`-# Couldn't attach ${files.map((f) => code(f.name)).join(", ")}: ${errorText(err)}`);
           });
     return this.enqueue(send).catch((err) => console.error(`[${this.thread.id}] send failed`, err));
@@ -638,6 +620,7 @@ export class ThreadSession {
   }
 
   private dispose() {
+    turnLog.end(this.workdir, this.linkKey);
     clearInterval(this.progressTimer);
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.stopTyping();

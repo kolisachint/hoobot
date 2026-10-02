@@ -71,18 +71,10 @@ const prompt = buildPrompt({
 });
 console.log(`app-server: ${config.appServer || config.hoocodeBin + " app-server"}\nworkdir: ${workdir}\n--- prompt (first 600 chars) ---\n${prompt.slice(0, 600)}\n---`);
 
+const { fakeSpace } = await import("./fixtures/fake-space.ts");
 const log: string[] = [];
-const uploads: string[] = [];
-const thread = {
-  id: "e2e-inbound",
-  send: async (c: any) => {
-    const text = typeof c === "string" ? c : c.content;
-    for (const f of c?.files ?? []) uploads.push(f.name);
-    log.push(`SEND  ${text}`);
-    return { edit: async () => {}, delete: async () => {}, awaitMessageComponent: async () => Promise.reject(new Error("no approvals")) };
-  },
-  sendTyping: async () => {},
-};
+const uploadSets: string[][] = [];
+const thread = fakeSpace("e2e-inbound", { log, uploads: uploadSets });
 
 const endpoint = config.appServer || `stdio:${config.hoocodeBin} app-server ${config.hoocodeArgs.join(" ")}`;
 const client = await CodexClient.connect(endpoint, undefined, { cwd: workdir });
@@ -109,6 +101,7 @@ const fail = (msg: string) => {
 };
 if (!answer.includes("PELICAN-42")) fail("the pasted note didn't reach the model");
 if (!answer.includes("TANGERINE")) fail("the model didn't read data.csv from the work folder");
+const uploads = uploadSets.flat();
 if (uploads.length) fail(`files sent on Discord were sent back: ${uploads.join(", ")}`);
 console.log("\nOK (pasted file answered directly; big file read from its path; nothing echoed back)");
 process.exit(0);

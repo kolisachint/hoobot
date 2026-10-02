@@ -1,5 +1,5 @@
 // End-to-end: a real app-server writes files; they come back as attachments
-// on a fake Discord thread. Uses API credits.
+// on a fake chat thread. Uses API credits.
 //
 //   bun test/attachments.e2e.ts
 //   APP_SERVER="stdio:codex app-server" bun test/attachments.e2e.ts
@@ -31,25 +31,10 @@ prepareWorkspace();
 const endpoint = config.appServer || `stdio:${config.hoocodeBin} app-server ${config.hoocodeArgs.join(" ")}`;
 console.log(`app-server: ${endpoint}\nworkdir: ${workdir}`);
 
+const { fakeSpace } = await import("./fixtures/fake-space.ts");
 const log: string[] = [];
 const uploads: string[][] = [];
-const fakeMsg = () => ({
-  edit: async () => {},
-  delete: async () => {},
-  awaitMessageComponent: async () => {
-    throw new Error("no approvals expected with APPROVALS=auto");
-  },
-});
-const thread = {
-  id: "e2e-attach",
-  send: async (c: any) => {
-    const text = typeof c === "string" ? c : c.content;
-    if (c?.files?.length) uploads.push(c.files.map((f: any) => f.name));
-    log.push(`SEND  ${text}${c?.files?.length ? `  [files: ${c.files.map((f: any) => f.name).join(", ")}]` : ""}`);
-    return fakeMsg();
-  },
-  sendTyping: async () => {},
-};
+const thread = fakeSpace("e2e-attach", { log, uploads });
 
 const client = await CodexClient.connect(endpoint, undefined, { cwd: workdir });
 const session = new ThreadSession(thread, client, new LinkStore(config.linksFile), () => {}, workdir);
