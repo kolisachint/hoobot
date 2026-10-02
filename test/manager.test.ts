@@ -126,6 +126,12 @@ test("a real token never leaves the process, and an untouched one is not written
   expect(env).toContain("SLACK_BOT_TOKEN=xoxb-real");
   expect(env).toContain("SLACK_APP_TOKEN=xapp-real");
 
+  // A mask sent as a new value is refused, and the page is told so.
+  const refused = applyPatch("secretive", { secrets: { SLACK_BOT_TOKEN: `x${shown.secrets.SLACK_BOT_TOKEN}` } }, dir);
+  expect(refused.skipped).toEqual(["SLACK_BOT_TOKEN"]);
+  expect(await Bun.file(bot.envPath).text()).toContain("SLACK_BOT_TOKEN=xoxb-real");
+  expect(refused.tokenSurfaces).toEqual(["slack"]);
+
   // A genuinely new token replaces it.
   applyPatch("secretive", { secrets: { SLACK_BOT_TOKEN: "xoxb-new" } }, dir);
   expect(await Bun.file(bot.envPath).text()).toContain("SLACK_BOT_TOKEN=xoxb-new");

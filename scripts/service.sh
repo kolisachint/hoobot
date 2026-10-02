@@ -28,6 +28,14 @@ SERVICE_PATH="$NODE_DIR:$(dirname "${BUN:-/usr/local/bin/bun}"):$HOME/.hoocode/b
 write_plist() {
   [ -n "$BUN" ] || { echo "bun not found on PATH"; exit 1; }
   [ -f "$REPO/.env" ] || { echo "Missing $REPO/.env (copy .env.example)"; exit 1; }
+  # A sleeping Mac doesn't stop the bot, it silences it: Slack delivers
+  # nothing to a socket nobody is reading. -i holds idle sleep only, so the
+  # display still dims and the lid still closes.
+  if command -v caffeinate >/dev/null 2>&1; then
+    WRAP="<string>caffeinate</string><string>-i</string>"
+  else
+    WRAP=""
+  fi
   mkdir -p "$LOG_DIR" "$(dirname "$PLIST")"
   cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -35,8 +43,11 @@ write_plist() {
 <plist version="1.0">
 <dict>
   <key>Label</key><string>$LABEL</string>
+  <!-- caffeinate holds idle sleep while the bot runs, and exits with it, so
+       the assertion can never outlive the bot (design doc 21). It is not a
+       sleep when caffeinate is missing — the bot just runs as it always did. -->
   <key>ProgramArguments</key>
-  <array>
+  <array>$WRAP
     <string>$BUN</string>
     <string>src/index.ts</string>
   </array>

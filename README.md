@@ -31,7 +31,12 @@ Needs [Bun](https://bun.sh). The bot reads `.env` from the folder you start it i
 bun add -g @kolisachint/hoobot
 curl -o .env https://raw.githubusercontent.com/kolisachint/hoobot/main/.env.example   # then fill it in
 hoobot
+hoobot manager --open   # the bot manager page: http://127.0.0.1:8790
 ```
+
+Installed this way, the manager keeps its bots in `~/.hoobot/runtime`
+(`HOOBOT_RUNTIME_DIR` to move it), outside the package folder a reinstall
+replaces.
 
 ## Setup
 
@@ -152,7 +157,7 @@ way to keep one instance alive at login; use one supervisor per instance.
 ## The bot manager (UI)
 
 ```sh
-bun run manager --open     # http://127.0.0.1:8790
+bun run manager --open     # http://127.0.0.1:8790 (from npm: hoobot manager --open)
 ```
 
 A local page that lists your bots, and lets you make more:
@@ -163,10 +168,21 @@ A local page that lists your bots, and lets you make more:
 - **Start / Stop / Restart** — the same `scripts/runtime.sh` commands you'd
   type. If a bot won't boot, you get the last lines of its log, not a
   spinner.
-- **Settings** — every `.env` key, grouped and explained, saved as you type.
-  Tokens show as a mask and are never sent back to the page.
+- **Settings** — every `.env` key, grouped and explained, saved as you type
+  (a running bot picks them up on Restart; the page says so). A token is
+  saved when you leave its box, shows only as a mask, and is never sent back
+  to the page; clearing one is its own button.
 - **Status** — each bot's own `/healthz`: which chats are connected, its
   model, approvals, pid, uptime, live threads, and a tail of its log.
+- **Sleeping Mac** — on a Mac, if a bot is running and nothing is holding the
+  machine awake, the page says so. A sleeping Mac doesn't stop a bot, it
+  silences it: Slack delivers no messages to a socket nobody is reading, and
+  the silence looks exactly like a bot nobody is talking to. Bots started with
+  `scripts/runtime.sh` are wrapped in `caffeinate -i`, so they hold the Mac
+  awake themselves; Amphetamine or any other sleep keeper also counts.
+  Closing the lid still sleeps a Mac — no assertion overrides that.
+- **Keys** — `n` new bot, `j`/`k` (or arrows in the list) to move, `s`
+  start/stop, `r` restart. The address names the bot, so a reload stays put.
 
 There is no database: `runtime/<name>/.env` *is* the configuration, so the
 UI and your editor can never disagree, and comments in the file survive an
@@ -296,8 +312,10 @@ the thread; the first answer wins and the others see it resolved.
 | `src/inbound.ts` | Saves files sent on Discord or Slack into the work folder for the prompt |
 | `src/format.ts` | Splits long replies to fit the chat's message limit |
 | `src/health.ts` | `/healthz` and `/api/bots` on 127.0.0.1: liveness, config, live sessions |
+| `src/cli.ts` | The `hoobot` command: the bot, or `hoobot manager [--open]` |
 | `src/manager.ts` | The bot manager: its API, and the page from `web/` on 127.0.0.1:8790 |
 | `src/instances.ts` | `runtime/<name>/.env` read/write, list, create, delete; the fields the UI shows |
+| `src/power.ts` | On a Mac: whether anything is keeping it awake, so the UI can warn ([design](docs/design/21-sleeping-on-a-mac.md)) |
 | `src/avatar.ts` | A seed → an inline SVG avatar (circle or squircle, six palettes) |
 | `web/` | The manager page: `index.html`, `app.js`, `style.css` — no build step |
 | `scripts/runtime.sh` | `init`/`start`/`stop`/`restart`/`status`/`health`/`logs` for one instance in `runtime/<name>/` |

@@ -12,12 +12,15 @@
   --line: #e6e6e2;
   --ink: #17171a;
   --ink-2: #5c5c66;
-  --ink-3: #8f8f99;
+  /* Hints, meta and placeholders: >= 4.5:1 on every panel colour (WCAG AA). */
+  --ink-3: #6b6b75;
+  /* Field edges and the off toggle: >= 3:1, so a control is visible as one. */
+  --field-line: #8a8a94;
   --accent: #17171a;
   --accent-ink: #ffffff;
   --good: #3f9e5b;
   --warn: #c98a1b;
-  --bad: #c9456b;
+  --bad: #b83a5f;
   --radius: 14px;
   --radius-sm: 9px;
   --shadow: 0 1px 2px rgba(20, 20, 25, 0.05), 0 8px 24px rgba(20, 20, 25, 0.05);
@@ -33,7 +36,9 @@
     --line: #2a2a31;
     --ink: #f2f2f4;
     --ink-2: #a8a8b3;
-    --ink-3: #74747f;
+    --ink-3: #8e8e99;
+    --field-line: #6e6e7a;
+    --bad: #ec7096;
     --accent: #f2f2f4;
     --accent-ink: #111114;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 30px rgba(0, 0, 0, 0.35);
@@ -180,9 +185,9 @@ h3 {
   border-radius: 50%;
 }
 
-.bot.on img,
-.bot.squircle img {
-  border-radius: 50%;
+.bot:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .bot-text {
@@ -278,6 +283,12 @@ h3 {
   box-shadow: var(--shadow);
 }
 
+/* The SVG draws the shape; a squircle must not be clipped back to a circle. */
+.bot img.squircle,
+.avatar-xl.squircle {
+  border-radius: 22%;
+}
+
 .titles {
   min-width: 0;
   flex: 1;
@@ -295,7 +306,11 @@ h3 {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 16px 18px;
-  box-shadow: var(--shadow);
+}
+
+/* A failing bot's Activity comes first and says so. */
+.card.alert {
+  border-color: color-mix(in srgb, var(--bad) 45%, var(--line));
 }
 
 .card-head {
@@ -381,10 +396,15 @@ h3 {
   padding-top: 4px;
 }
 
-/* A closed group still shows it has something in it. */
-.group:not([open]) h3::after {
-  content: " ·";
+/* A closed group says how much is in it. */
+.group .count {
+  margin-left: 6px;
+  font-weight: 500;
   color: var(--ink-3);
+}
+
+.group[open] .count {
+  display: none;
 }
 
 /* ---------------------------------------------------------------- fields */
@@ -413,7 +433,7 @@ select,
 textarea {
   width: 100%;
   padding: 8px 10px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--field-line);
   border-radius: var(--radius-sm);
   background: var(--panel-2);
   color: var(--ink);
@@ -421,12 +441,45 @@ textarea {
   font-size: 13px;
 }
 
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible,
+summary:focus-visible,
+.toggle input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 input:focus,
 select:focus,
 textarea:focus {
-  outline: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
-  outline-offset: 1px;
   border-color: var(--accent);
+}
+
+::placeholder {
+  color: var(--ink-3);
+  opacity: 1;
+}
+
+.secret-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.secret-row input {
+  flex: 1;
+}
+
+.current {
+  font: 12px var(--mono);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.field .hint.err {
+  color: var(--bad);
 }
 
 input[type="number"] {
@@ -455,8 +508,9 @@ select {
 .toggle input {
   width: 34px;
   height: 20px;
+  flex: none;
   appearance: none;
-  background: var(--line);
+  background: var(--field-line);
   border-radius: 999px;
   position: relative;
   cursor: pointer;
@@ -482,6 +536,13 @@ select {
 
 .toggle input:checked::after {
   transform: translateX(14px);
+}
+
+/* A whole chat can't be switched off while it still has tokens. */
+.toggle input:disabled,
+.toggle input:disabled + span {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 /* --------------------------------------------------------------- buttons */
@@ -528,6 +589,48 @@ select {
 .btn.tiny {
   padding: 5px 10px;
   font-size: 12px;
+  min-height: 32px;
+}
+
+/* Settings saved while the bot runs: it reads .env only when it starts. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warn) 18%, var(--panel));
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 550;
+  white-space: nowrap;
+}
+
+/* The manager itself can't be reached: what's on screen may be stale. */
+.banner {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin: -26px -30px 18px;
+  padding: 10px 30px;
+  background: color-mix(in srgb, var(--bad) 14%, var(--panel));
+  color: var(--ink);
+  font-size: 13px;
+  border-bottom: 1px solid color-mix(in srgb, var(--bad) 40%, var(--line));
+}
+
+/* A warning, not a failure: the page is fine, the machine is about to nap. */
+.banner.warn {
+  background: color-mix(in srgb, var(--warn) 14%, var(--panel));
+  border-bottom-color: color-mix(in srgb, var(--warn) 40%, var(--line));
+}
+
+.banner.warn strong {
+  margin-right: 4px;
+}
+
+.stale .detail,
+.stale .bots {
+  opacity: 0.55;
 }
 
 .btn.block {
@@ -587,7 +690,6 @@ select {
   display: flex;
   flex-direction: column;
   background: var(--panel);
-  border: 1px solid var(--line);
   border-radius: 18px;
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.3);
   overflow: hidden;
@@ -667,7 +769,8 @@ select {
   color: var(--ink-2);
   font: inherit;
   font-size: 12px;
-  padding: 4px 10px;
+  padding: 6px 12px;
+  min-height: 30px;
   border-radius: 999px;
   cursor: pointer;
 }
@@ -680,13 +783,14 @@ select {
 
 .swatches {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 6px;
   width: 100%;
 }
 
 .swatch {
-  height: 20px;
+  height: 28px;
+  min-width: 28px;
   border-radius: 6px;
   border: 1px solid rgba(0, 0, 0, 0.08);
   cursor: pointer;
@@ -705,10 +809,11 @@ select {
 .swatch.auto::after {
   content: "auto";
   display: block;
-  font-size: 8px;
-  line-height: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 28px;
   color: #fff;
-  text-shadow: 0 0 3px rgba(0, 0, 0, 0.6);
+  text-shadow: 0 0 2px #000, 0 0 4px rgba(0, 0, 0, 0.8);
 }
 
 .choice {
@@ -716,9 +821,10 @@ select {
   align-items: center;
   gap: 7px;
   padding: 8px 14px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--field-line);
   border-radius: 999px;
   background: var(--panel-2);
+  color: var(--ink);
   font-size: 13px;
   font-weight: 550;
   cursor: pointer;
@@ -744,6 +850,16 @@ select {
 }
 
 /* ----------------------------------------------------------------- toast */
+
+/* Heard, not seen: the toast's text for screen readers. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
 
 .toast {
   position: fixed;
@@ -779,6 +895,32 @@ select {
 
   .bot {
     width: auto;
+  }
+
+  .side-foot {
+    display: none;
+  }
+
+  .main {
+    padding: 18px 16px 48px;
+  }
+
+  .banner {
+    margin: -18px -16px 14px;
+    padding: 10px 16px;
+  }
+
+  .detail-head {
+    flex-wrap: wrap;
+  }
+
+  .head-actions {
+    width: 100%;
+  }
+
+  .head-actions .btn {
+    flex: 1;
+    min-height: 40px;
   }
 
   .identity {

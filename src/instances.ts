@@ -25,14 +25,24 @@ export function repoRoot(): string {
   return resolve(import.meta.dir, "..");
 }
 
+/** True when this code runs from an installed package, not a checkout. */
+export function isInstalled(root = repoRoot()): boolean {
+  return /[\\/]node_modules[\\/]/.test(root);
+}
+
 /**
- * `runtime/`, or `HOOBOT_RUNTIME_DIR` so tests (and a second checkout) can
- * work somewhere harmless. `dir` wins over both: callers that were handed a
- * folder use it rather than guessing.
+ * `runtime/` in a checkout, `~/.hoobot/runtime` when installed from npm (a
+ * reinstall replaces the package folder, and tokens must not live in it), or
+ * `HOOBOT_RUNTIME_DIR` so tests (and a second checkout) can work somewhere
+ * harmless. `dir` wins over all of them: callers that were handed a folder
+ * use it rather than guessing.
  */
 export function runtimeDir(dir?: string): string {
   if (dir) return resolve(dir);
-  return resolve(process.env.HOOBOT_RUNTIME_DIR?.trim() || join(repoRoot(), "runtime"));
+  const env = process.env.HOOBOT_RUNTIME_DIR?.trim();
+  if (env) return resolve(env);
+  const root = repoRoot();
+  return isInstalled(root) ? join(homedir(), ".hoobot", "runtime") : join(root, "runtime");
 }
 
 // ---------------------------------------------------------------- env files
@@ -212,7 +222,7 @@ export const FIELDS: Field[] = [
     kind: "multi",
     group: "Chat",
     choices: ["slack", "discord"],
-    hint: "Which chats this bot is set up for. It connects once the tokens above are filled in.",
+    hint: "Which chats this bot is set up for. Each one connects once its tokens are filled in.",
   },
 
   { key: "ALLOWED_USER_IDS", label: "Allowed users", kind: "list", group: "People", hint: "Everyone else is ignored. Discord IDs are digits, Slack member IDs look like U0123ABCD.", placeholder: "758289752645959720" },
@@ -235,7 +245,7 @@ export const FIELDS: Field[] = [
   { key: "APPROVAL_TIMEOUT_MINUTES", label: "Approval timeout", kind: "number", group: "Approvals", min: 1, max: 120, hint: "Minutes to wait for an Allow / Deny click." },
   { key: "IDLE_TIMEOUT_MINUTES", label: "Idle timeout", kind: "number", group: "Approvals", min: 1, max: 1440, hint: "Minutes of silence before the bot lets go of a thread." },
 
-  { key: "HEALTH_PORT", label: "Health port", kind: "number", group: "Advanced", min: 1024, max: 65535, hint: "This bot's own port on 127.0.0.1, or off to disable." },
+  { key: "HEALTH_PORT", label: "Health port", kind: "number", group: "Advanced", min: 1024, max: 65535, hint: "This bot's own port on 127.0.0.1. The manager reads its status from here." },
   { key: "HOO_INSTANCE", label: "Instance name", kind: "text", group: "Advanced", hint: "Shown in /healthz. Set from the folder name." },
 
   { key: "HOO_AVATAR_SEED", label: "Avatar seed", kind: "number", group: "Look", min: 0, hint: "The same seed always draws the same avatar." },
@@ -273,6 +283,8 @@ export type Instance = {
   running: boolean;
   pid: number | null;
   surfaces: ("discord" | "slack")[];
+  /** The chats it has tokens for: these can't be unticked, only emptied. */
+  tokenSurfaces: ("discord" | "slack")[];
   /** Visible settings, keys only. */
   config: Record<string, string>;
   /** Token fields, masked; "" means not set. */
@@ -347,6 +359,7 @@ export function instanceFrom(name: string, env: Map<string, string>, dir?: strin
     running: pid !== null,
     pid,
     surfaces,
+    tokenSurfaces: surfacesFor(env),
     config,
     secrets,
     fields: fieldsFor(surfaces),

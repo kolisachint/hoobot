@@ -85,6 +85,13 @@ do_start() {
   else
     cmd="bun $REPO/src/index.ts"
   fi
+  # On a Mac, hold idle sleep for as long as the bot runs: a sleeping Mac
+  # freezes the bot and Slack delivers nothing while it sleeps. `caffeinate -i`
+  # releases the moment the bot exits, so the assertion can never outlive it,
+  # and it lets the display dim and the lid close as usual (design doc 21).
+  case "$(uname -s)" in
+    Darwin) if command -v caffeinate >/dev/null 2>&1; then cmd="caffeinate -i $cmd"; fi ;;
+  esac
   HOO_INSTANCE="$name" HEALTH_PORT="$HEALTH_PORT" nohup $cmd >>"$(logfile "$dir" "$name")" 2>&1 &
   echo $! >"$(pidfile "$dir" "$name")"
   sleep 5

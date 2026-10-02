@@ -11,6 +11,7 @@ import {
   createInstance,
   deleteInstance,
   fieldsFor,
+  isInstalled,
   isSecretKey,
   listInstances,
   maskSecret,
@@ -19,6 +20,7 @@ import {
   parseLists,
   pidFor,
   readInstance,
+  runtimeDir,
   suggestName,
   surfacesFor,
   UNCHANGED,
@@ -38,6 +40,18 @@ afterEach(() => {
 });
 
 const envOf = (name: string) => parseEnv(readFileSync(join(dir, name, ".env"), "utf8"));
+
+test("an npm install keeps its bots in ~/.hoobot, a checkout in runtime/", () => {
+  expect(isInstalled("/Users/me/.bun/install/global/node_modules/@kolisachint/hoobot")).toBe(true);
+  expect(isInstalled("C:\\Users\\me\\node_modules\\@kolisachint\\hoobot")).toBe(true);
+  expect(isInstalled("/Users/me/github/hoobot")).toBe(false);
+  const saved = process.env.HOOBOT_RUNTIME_DIR;
+  process.env.HOOBOT_RUNTIME_DIR = "/tmp/elsewhere";
+  expect(runtimeDir()).toBe("/tmp/elsewhere");
+  expect(runtimeDir("/tmp/given")).toBe("/tmp/given");
+  if (saved === undefined) delete process.env.HOOBOT_RUNTIME_DIR;
+  else process.env.HOOBOT_RUNTIME_DIR = saved;
+});
 
 test("env parsing is tolerant: comments, blanks, quotes, last wins", () => {
   const env = parseEnv(

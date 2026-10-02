@@ -55,6 +55,7 @@ The Markdown files are the source of truth.
 | 18 | [18-current-step.md](18-current-step.md) | **Current step: Rust hoocode, MIT only** | decided |
 | 19 | [19-run-layout-and-desktop.md](19-run-layout-and-desktop.md) | Runtime folder merge + desktop UI plan | decided |
 | 20 | [20-bot-manager-ui.md](20-bot-manager-ui.md) | **The bot manager: listing, creating, starting bots** | built |
+| 21 | [21-sleeping-on-a-mac.md](21-sleeping-on-a-mac.md) | **Sleeping on a Mac: what survives, and holding it awake** | built |
 
 ## Decision log
 
