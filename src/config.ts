@@ -24,6 +24,13 @@ export const config = {
    * (digits) and Slack member IDs (`U0123ABCD`) in one list.
    */
   allowedUserIds: new Set(list("ALLOWED_USER_IDS")),
+  /**
+   * Slack user IDs of other bots (e.g. a companion hoobot) that may call
+   * this one by mentioning it. Empty = bots are ignored.
+   */
+  peerBotIds: new Set(list("PEER_BOT_IDS")),
+  /** Answers a peer bot gets per thread before an allowed user is asked for more. */
+  peerTurns: Math.max(1, Number(process.env.PEER_TURNS ?? 2) || 2),
   /** Optional: restrict to one Discord server / some channels (Discord or Slack channel IDs). */
   guildId: process.env.GUILD_ID?.trim() || undefined,
   channelIds: new Set(list("CHANNEL_IDS")),

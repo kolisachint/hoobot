@@ -143,6 +143,13 @@ work together. Each has its own hoocode conversation, model and settings.
 - **Threads:** open a thread for a side task. It gets its own
   conversation in the same folder; its first call also reads the channel
   messages that led up to it. Results stay in the thread.
+- **Two bots talking (Slack):** set `PEER_BOT_IDS` to another bot's
+  member ID (e.g. a companion hoobot) and it can call this one by
+  mentioning it; `@name` of a peer in an answer becomes a real mention.
+  To stop loops, a peer gets `PEER_TURNS` (default 2) answers per thread;
+  then an allowed user gets **Yes / No** buttons for 2 more. A person
+  calling the bot in that thread starts the count over. Peers can't run
+  `!` commands. Other bots are still ignored.
 - **Steer:** calling it while it's busy redirects the current run.
 - **Needs** the **Read Message History** permission in those channels
   (Slack: the bot must be in the channel); without it, it works with no
@@ -219,6 +226,7 @@ the thread; the first answer wins and the others see it resolved.
 | `src/chat.ts` | The `ChatSpace` interface a session talks to |
 | `src/discord.ts` | Discord side: mentions and replies → calls; channels and threads → spaces; buttons, menus |
 | `src/slack.ts` | Slack side (Socket Mode): mentions → calls; channels and threads → spaces; Block Kit buttons, menus |
+| `src/peers.ts` | Peer bots: turns per thread, `@name` → Slack mention |
 | `src/mrkdwn.ts` | Markdown → Slack mrkdwn, and Slack text → plain text |
 | `src/context.ts` | What people said since the bot last read a space |
 | `src/session.ts` | One app-server thread per channel or thread; notifications → messages, buttons → approvals |

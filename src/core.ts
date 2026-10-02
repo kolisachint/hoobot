@@ -102,6 +102,8 @@ export interface Call {
   context(state: { linked: boolean; seen: string | null }): Promise<string>;
   /** The message this one replies to, unless it's the bot's own. */
   replyTo?(): Promise<{ context: ContextMessage | null; message: FileMessage } | null>;
+  /** Called by a peer bot (`PEER_BOT_IDS`), not a person: no allow list, no commands. */
+  peer?: boolean;
   /** Downloads a file (Slack needs the bot token). */
   fetcher?: Fetcher;
 }
@@ -136,11 +138,13 @@ export function helpText(label: string, menu: string): string {
 export async function handleCall(call: Call, help: string): Promise<void> {
   const { space } = call;
   // Only allowed users can call the bot (everyone's messages still count as context).
-  if (!config.allowedUserIds.has(call.userId)) {
+  if (!call.peer && !config.allowedUserIds.has(call.userId)) {
     await call.reply("Sorry, you're not on this bot's allow list.");
     return;
   }
   const text = call.text.trim();
+  // Peers talk; they don't run commands or get help.
+  if (call.peer && (!text || text.startsWith("!"))) return;
   if (!text && call.files.length === 0) {
     await call.reply(help);
     return;

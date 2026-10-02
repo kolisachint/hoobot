@@ -16,7 +16,8 @@ import { config, workdirFor } from "./config.ts";
 import { gatherContext, type MessageLike, type SpaceLike } from "./context.ts";
 import type { ChatSpace, Choice, Picked, Posted } from "./chat.ts";
 import { handleCall, helpText } from "./core.ts";
-import { fromMrkdwn, toMrkdwn } from "./mrkdwn.ts";
+import { fromMrkdwn, toMrkdwn as mrkdwn } from "./mrkdwn.ts";
+import { linkMentions, TurnBudget } from "./peers.ts";
 import type { AttachmentLike, Fetcher } from "./inbound.ts";
 
 const HELP = helpText("Slack", "a menu");
@@ -89,6 +90,12 @@ export class Slack {
   /** Recent event ids, so a redelivered event isn't answered twice. */
   private seen = new Set<string>();
   private nonce = 0;
+  /** Peer bots by lowercase name → user id, so `@name` in an answer becomes a mention. */
+  private peers = new Map<string, string>();
+  /** Answers to peer bots per thread (see src/peers.ts). */
+  private budget = new TurnBudget(config.peerTurns);
+  /** Spaces where "allow more turns?" is already asked. */
+  private asking = new Set<string>();
 
   constructor(botToken: string, appToken: string) {
     this.web = new WebClient(botToken, { logLevel: LogLevel.ERROR });
@@ -108,10 +115,19 @@ export class Slack {
   async start(): Promise<void> {
     const auth = await this.web.auth.test();
     this.botUserId = String(auth.user_id);
+    for (const id of config.peerBotIds) {
+      if (id === this.botUserId) continue;
+      const info: any = await this.web.users.info({ user: id }).catch(() => null);
+      for (const n of [info?.user?.name, info?.user?.profile?.display_name, info?.user?.real_name]) {
+        if (n && /^[\w.-]+$/.test(n)) this.peers.set(String(n).toLowerCase(), id);
+      }
+      if (!info) console.error(`PEER_BOT_IDS: can't look up ${id}`);
+    }
     this.socket.on("message", (e: any) => this.onEvent(e));
     this.socket.on("interactive", (e: any) => this.onInteractive(e));
     await this.socket.start();
     console.log(`Slack: logged in as @${auth.user} in ${auth.team}`);
+    if (this.peers.size) console.log(`Slack: peer bots ${[...new Set(this.peers.keys())].map((n) => "@" + n).join(", ")} (${config.peerTurns} turns per thread)`);
   }
 
   async stop(): Promise<void> {
@@ -145,7 +161,10 @@ export class Slack {
   }
 
   private async onMessage(event: any) {
-    if (!event || event.bot_id || !event.user || event.user === this.botUserId) return;
+    if (!event || !event.user || event.user === this.botUserId) return;
+    // Bots are ignored, except peers (PEER_BOT_IDS).
+    const peer = !!event.bot_id || config.peerBotIds.has(event.user);
+    if (peer && !config.peerBotIds.has(event.user)) return;
     if (!USER_SUBTYPES.has(event.subtype)) return;
     // Channels and private channels only, like Discord's text channels.
     if (event.channel_type !== "channel" && event.channel_type !== "group") return;
@@ -158,14 +177,22 @@ export class Slack {
 
     const threadTs: string | undefined = event.thread_ts && event.thread_ts !== event.ts ? event.thread_ts : undefined;
     const space = this.space(channel, threadTs);
+    if (!peer) this.budget.reset(space.id);
+    else if (!(await this.peerTurn(space))) return;
     const history = this.history(channel, threadTs);
+    const author = await this.name(event.user);
+    let said = fromMrkdwn(text, (id) => this.cachedName(id));
+    if (peer) {
+      said += `\n\n(${author} is a bot. To answer it, mention @${author}; leave the mention out to end the conversation.)`;
+    }
     await handleCall(
       {
         space,
         userId: event.user,
-        author: await this.name(event.user),
+        author,
+        peer,
         messageId: event.ts,
-        text: fromMrkdwn(text, (id) => this.cachedName(id)),
+        text: said,
         files: slackFiles(event.files),
         workdir: workdirFor(channel),
         reply: (t) => space.send(t),
@@ -177,11 +204,51 @@ export class Slack {
     );
   }
 
+  /**
+   * Use one peer turn here. When they're spent, ask an allowed user
+   * (Yes / No) for more; `false` = don't answer.
+   */
+  private async peerTurn(space: ChatSpace): Promise<boolean> {
+    if (this.budget.take(space.id)) return true;
+    if (this.asking.has(space.id)) return false;
+    this.asking.add(space.id);
+    try {
+      const n = config.peerTurns;
+      const { msg, pick } = await space.choose(
+        `I've answered the other bot ${this.budget.used(space.id)} times in this thread. Allow ${n} more turns?`,
+        "buttons",
+        [
+          { label: `Yes, ${n} more`, value: "yes", style: "primary" },
+          { label: "No, stop", value: "no", style: "danger" },
+        ],
+        config.approvalTimeoutMs,
+      );
+      const picked = await pick.catch(() => null);
+      if (!picked) {
+        await msg.edit("No answer, so the bots stop talking here.").catch(() => {});
+        return false;
+      }
+      if (picked.value !== "yes") {
+        await picked.update(`${picked.user} said stop. The bots stop talking here.`).catch(() => {});
+        return false;
+      }
+      await picked.update(`${picked.user} allowed ${n} more turns.`).catch(() => {});
+      this.budget.grant(space.id);
+      return this.budget.take(space.id);
+    } finally {
+      this.asking.delete(space.id);
+    }
+  }
+
+  /** Slack mrkdwn, with `@peer` turned into a real mention. */
+  private toMrkdwn = (md: string) => linkMentions(mrkdwn(md), this.peers);
+
   // ── Spaces ─────────────────────────────────────────────────────────────────
 
   /** A Slack channel or thread as a `ChatSpace`. */
   space(channel: string, threadTs?: string): ChatSpace {
     const web = this.web;
+    const toMrkdwn = this.toMrkdwn;
     const posted = (ts: string | undefined): Posted => ({
       edit: (text) => (ts ? web.chat.update({ channel, ts, text: toMrkdwn(text), blocks: [] }) : Promise.resolve()),
       delete: () => (ts ? web.chat.delete({ channel, ts }) : Promise.resolve()),
@@ -273,7 +340,7 @@ export class Slack {
     pending.resolve({
       value,
       user: body.user?.username ?? body.user?.name ?? (await this.name(userId)),
-      update: (text) => this.web.chat.update({ channel, ts, text: toMrkdwn(text), blocks: [] }),
+      update: (text) => this.web.chat.update({ channel, ts, text: this.toMrkdwn(text), blocks: [] }),
     });
   }
 
