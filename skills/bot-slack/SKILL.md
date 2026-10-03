@@ -59,9 +59,9 @@ because that is the only real test of a bot.
 Step 1 prints:
 
 ```
-app_id=A0C69MAUQ8K
-bot_user_id=U0C6AK07ATF
-team_id=T0C5ASK6J4E
+app_id=A0C00000000
+bot_user_id=U0C00000000
+team_id=T0000000000
 ```
 
 **Keep `bot_user_id`.** That is what goes in `PEER_BOT_IDS` on the *other*
@@ -78,7 +78,7 @@ bun "$S/slack-app.ts" tokens hee --write
 ```
 SLACK_BOT_TOKEN=xoxb-…
 SLACK_APP_TOKEN=xapp-1-…
-bot_user_id=U0C6AK07ATF
+bot_user_id=U0C00000000
 socket_mode=ok
 ```
 
