@@ -210,7 +210,7 @@ function setIf(el, prop, value) {
 
 /** Versioned by seed and shape, so a re-rolled face shows without a reload. */
 function avatarUrl(instance) {
-  return `/api/instances/${instance.name}/avatar.svg?v=${instance.avatarSeed}-${instance.avatarShape}-${instance.avatarPalette}`;
+  return `/api/instances/${instance.name}/avatar.svg?v=${instance.avatarSeed}-${instance.avatarShape}-${instance.avatarStyle}-${instance.avatarPalette}`;
 }
 
 // ----------------------------------------------------------------- detail
@@ -688,12 +688,12 @@ async function removeBot(name) {
 
 // ------------------------------------------------------------- new bot
 
-const draft = { name: "", seed: 0, shape: "circle", palette: "", surfaces: new Set(["slack"]), tokens: {} };
+const draft = { name: "", seed: 0, shape: "circle", style: "dots", palette: "", surfaces: new Set(["slack"]), tokens: {} };
 
 function avatarPreview() {
   // No seed means "derive one from the name", which the server does, so the
   // preview is the face that gets saved rather than a lookalike.
-  const q = new URLSearchParams({ shape: draft.shape });
+  const q = new URLSearchParams({ shape: draft.shape, style: draft.style });
   if (draft.seed) q.set("seed", String(draft.seed));
   else if (draft.name) q.set("name", draft.name);
   if (draft.palette) q.set("palette", draft.palette);
@@ -817,12 +817,14 @@ function openSheet() {
   draft.name = "";
   draft.palette = "";
   draft.shape = "circle";
+  draft.style = "dots";
   draft.seed = Math.floor(Math.random() * 1e9);
   draft.tokens = {};
   $("n-name").value = "";
   $("n-workdir").value = state.data.sharedWorkdir;
   $("n-error").textContent = "";
   setShape(draft.shape);
+  setStyle(draft.style);
   renderSwatches();
   renderSurfaces();
   avatarPreview();
@@ -836,6 +838,13 @@ function setShape(shape) {
   for (const b of $("n-shape").querySelectorAll("button")) {
     b.classList.toggle("on", b.dataset.shape === shape);
     b.setAttribute("aria-pressed", String(b.dataset.shape === shape));
+  }
+}
+
+function setStyle(style) {
+  for (const b of $("n-style").querySelectorAll("button")) {
+    b.classList.toggle("on", b.dataset.style === style);
+    b.setAttribute("aria-pressed", String(b.dataset.style === style));
   }
 }
 
@@ -873,6 +882,7 @@ async function createBot() {
         workdir: $("n-workdir").value.trim(),
         avatarSeed: draft.seed,
         avatarShape: draft.shape,
+        avatarStyle: draft.style,
         avatarPalette: draft.palette,
         secrets: draft.tokens,
       },
@@ -979,6 +989,13 @@ $("n-shape").addEventListener("click", (e) => {
   if (!shape) return;
   draft.shape = shape;
   setShape(shape);
+  avatarPreview();
+});
+$("n-style").addEventListener("click", (e) => {
+  const style = e.target.dataset?.style;
+  if (!style) return;
+  draft.style = style;
+  setStyle(style);
   avatarPreview();
 });
 

@@ -57,3 +57,33 @@ test("the data uri escapes the whole svg", () => {
   expect(uri).not.toContain("<svg");
   expect(decodeURIComponent(uri.slice("data:image/svg+xml,".length))).toContain("<title>vee</title>");
 });
+// ---------------------------------------------------------------- pet style
+
+test("the pet style is a deterministic cartoon face", () => {
+  const one = avatarSvg(4242, { style: "pet" });
+  expect(one).toBe(avatarSvg(4242, { style: "pet" }));
+  expect(one).not.toBe(avatarSvg(4243, { style: "pet" }));
+  expect(one.startsWith("<svg")).toBe(true);
+  // Self-contained, like the dot tile: no fonts, scripts, css or hrefs.
+  expect(one).not.toMatch(/<(script|style|use|image)\b/);
+  expect(one).not.toMatch(/(href|url\(['"]?http)/);
+  // The face: two eyes with highlights, a smile, two cheeks.
+  expect([...one.matchAll(/<ellipse cx="(\d+)" cy="68"/g)]).toHaveLength(2);
+  expect(one).toContain('stroke="#221B33"');
+  expect(one).toContain("q8 9 16 0");
+});
+
+test("pet honours shape and palette, and falls back rather than throwing", () => {
+  expect(avatarSvg(9, { style: "pet", shape: "circle" })).toContain('<circle cx="64"');
+  expect(avatarSvg(9, { style: "pet", shape: "squircle" })).toContain('<rect x="0" y="0" width="128"');
+  expect(avatarSvg(1, { style: "pet", palette: "rose" })).toContain(PALETTES.rose!.from);
+  expect(avatarSvg(1, { style: "pet", palette: "chartreuse" })).toContain("</svg>");
+  // dots is the default, so nobody's saved bot changes face under them.
+  expect(avatarSvg(4242)).toBe(avatarSvg(4242, { style: "dots" }));
+  expect(avatarSvg(4242, { style: "dots" })).not.toBe(avatarSvg(4242, { style: "pet" }));
+});
+
+test("a pet avatar escapes its name, like the dot tile", () => {
+  expect(avatarSvg(3, { style: "pet", name: "wren & friends" })).toContain("<title>wren &amp; friends</title>");
+  expect(decodeURIComponent(avatarDataUri(5, { style: "pet", name: "vee" }).slice("data:image/svg+xml,".length))).toContain("<title>vee</title>");
+});

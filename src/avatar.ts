@@ -23,6 +23,18 @@
 /** The tile outline. A circle is the chat default; a squircle reads as an app icon. */
 export type AvatarShape = "circle" | "squircle";
 
+/**
+ * How the face is drawn.
+ *
+ * - `dots` — the OpenAI / Grok dot-grid tile (the original, and still the
+ *   default so nobody's saved bot changes shape under them).
+ * - `pet` — a cartoonish character face: two eyes, a smile, blush, cropped
+ *   tight into the outline so it reads as a cute sticker/emoji at 24px.
+ */
+export type AvatarStyle = "dots" | "pet";
+
+export const AVATAR_STYLES: AvatarStyle[] = ["dots", "pet"];
+
 /** Two gradient stops plus the dot colour. Curated, not random: a random hue is usually ugly. */
 export type AvatarPalette = { from: string; to: string; dot: string; label: string };
 
@@ -93,8 +105,9 @@ function esc(text: string): string {
  */
 export function avatarSvg(
   seed: number,
-  opts: { shape?: AvatarShape; palette?: string; name?: string } = {},
+  opts: { shape?: AvatarShape; palette?: string; name?: string; style?: AvatarStyle } = {},
 ): string {
+  if ((opts.style ?? "dots") === "pet") return petSvg(seed, opts);
   const shape = opts.shape ?? "circle";
   const palette = paletteFor(opts.palette, seed);
   const name = opts.name?.trim();
@@ -161,7 +174,86 @@ export function avatarSvg(
   ].join("");
 }
 
+/**
+ * The `pet` face: a cartoonish character cropped tight into the outline.
+ *
+ * Everything that survives at 24px is drawn big — two large dark eyes with a
+ * single highlight each, a small smile, two blush cheeks — and the rest
+ * (ear shape, eye tilt, cheek size) is picked from the seed, so a bot still
+ * has its own face but every face reads as the same friendly character.
+ *
+ * Same two guarantees as the dot tile: deterministic, and self-contained.
+ */
+function petSvg(seed: number, opts: { shape?: AvatarShape; palette?: string; name?: string }): string {
+  const shape = opts.shape ?? "circle";
+  const palette = paletteFor(opts.palette, seed);
+  const name = opts.name?.trim();
+  const gid = `p${(seed >>> 0).toString(36)}`;
+  const clip = `pc${gid}`;
+  const rand = rng((seed >>> 0) ^ 0x51ed270b);
+
+  const clipShape =
+    shape === "circle"
+      ? `<circle cx="${SIZE / 2}" cy="${SIZE / 2}" r="${SIZE / 2}"/>`
+      : `<rect x="0" y="0" width="${SIZE}" height="${SIZE}" rx="30" ry="30"/>`;
+
+  /** Ears, drawn behind the face so the crop hides where they join. */
+  const ears: string[] = [];
+  const ear = ["round", "pointy", "tuft"][Math.floor(rand() * 3)]!;
+  if (ear === "round") {
+    ears.push(`<circle cx="34" cy="30" r="15" fill="${palette.dot}" opacity="0.92"/>`);
+    ears.push(`<circle cx="94" cy="30" r="15" fill="${palette.dot}" opacity="0.92"/>`);
+  } else if (ear === "pointy") {
+    ears.push(`<path d="M28 44 L32 6 L60 32 Z" fill="${palette.dot}" opacity="0.92"/>`);
+    ears.push(`<path d="M100 44 L96 6 L68 32 Z" fill="${palette.dot}" opacity="0.92"/>`);
+  } else {
+    ears.push(`<path d="M26 40 q-4 -30 16 -28 q18 2 16 28 Z" fill="${palette.dot}" opacity="0.92"/>`);
+    ears.push(`<path d="M102 40 q4 -30 -16 -28 q-18 2 -16 28 Z" fill="${palette.dot}" opacity="0.92"/>`);
+  }
+
+  // Eyes: large, dark, one highlight each. A tilt of a couple of degrees is
+  // the difference between "cute" and "creepy", so it comes from the seed.
+  const tilt = (rand() * 6 - 3).toFixed(2);
+  const eyeR = 11 + rand() * 2;
+  const eye = (cx: number) =>
+    `<g transform="rotate(${tilt} ${cx} 68)">` +
+    `<ellipse cx="${cx}" cy="68" rx="${(eyeR * 0.86).toFixed(2)}" ry="${eyeR.toFixed(2)}" fill="#221B33"/>` +
+    `<circle cx="${(cx + 3.6).toFixed(2)}" cy="63.4" r="3.4" fill="#FFFFFF"/>` +
+    `<circle cx="${(cx - 3.2).toFixed(2)}" cy="72.6" r="1.7" fill="#FFFFFF" opacity="0.75"/>` +
+    `</g>`;
+
+  const cheekR = 7 + rand() * 2;
+  const smile = `<path d="M56 88 q8 9 16 0" fill="none" stroke="#221B33" stroke-width="4.5" stroke-linecap="round"/>`;
+  const blush = (cx: number) => `<ellipse cx="${cx}" cy="86" rx="${(cheekR + 1).toFixed(2)}" ry="${(cheekR * 0.72).toFixed(2)}" fill="#FFFFFF" opacity="0.34"/>`;
+
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${SIZE} ${SIZE}" width="${SIZE}" height="${SIZE}" role="img" aria-hidden="false">`,
+    name ? `<title>${esc(name)}</title>` : "",
+    `<defs>`,
+    `<linearGradient id="${gid}" x1="0" y1="0" x2="1" y2="1" gradientTransform="rotate(135 0.5 0.5)">`,
+    `<stop offset="0%" stop-color="${palette.from}"/><stop offset="100%" stop-color="${palette.to}"/>`,
+    `</linearGradient>`,
+    `<clipPath id="${clip}">${clipShape}</clipPath>`,
+    `</defs>`,
+    `<g clip-path="url(#${clip})">`,
+    `<rect width="${SIZE}" height="${SIZE}" fill="url(#${gid})"/>`,
+    `<g>${ears.join("")}</g>`,
+    blush(34),
+    blush(94),
+    eye(46),
+    eye(82),
+    smile,
+    // Sheen, same idea as the dot tile: a physical object, not a flat swatch.
+    `<ellipse cx="${SIZE * 0.30}" cy="${SIZE * 0.14}" rx="${SIZE * 0.46}" ry="${SIZE * 0.30}" fill="#FFFFFF" opacity="0.12"/>`,
+    `</g>`,
+    shape === "circle"
+      ? `<circle cx="${SIZE / 2}" cy="${SIZE / 2}" r="${SIZE / 2 - 0.5}" fill="none" stroke="#000000" stroke-opacity="0.08" stroke-width="1"/>`
+      : `<rect x="0.5" y="0.5" width="${SIZE - 1}" height="${SIZE - 1}" rx="29.5" fill="none" stroke="#000000" stroke-opacity="0.08"/>`,
+    `</svg>`,
+  ].join("");
+}
+
 /** The avatar as a data URI, for places that want an `src` (CSS, `<img>`). */
-export function avatarDataUri(seed: number, opts: { shape?: AvatarShape; palette?: string; name?: string } = {}): string {
+export function avatarDataUri(seed: number, opts: { shape?: AvatarShape; palette?: string; name?: string; style?: AvatarStyle } = {}): string {
   return `data:image/svg+xml,${encodeURIComponent(avatarSvg(seed, opts))}`;
 }
