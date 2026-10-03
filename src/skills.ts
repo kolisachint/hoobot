@@ -17,7 +17,7 @@
  * record is ours to overwrite and anything else is left alone.
  */
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { isInstalled, runtimeDir } from "./instances.ts";
 
@@ -52,6 +52,17 @@ function skillFiles(dir: string, base = dir): string[] {
 }
 
 const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
+
+/**
+ * Keep the executable bit a bundled script had.
+ *
+ * A skill's scripts are run as `./run.sh` and `bash ./run.sh`, and a
+ * workspace seeded on a fresh machine gets them 0644 — which works right up
+ * until someone runs one directly, and then fails with a permission error
+ * that says nothing about permissions. The mode is part of the file, so it
+ * travels with it.
+ */
+const mode = (path: string): number => statSync(path).mode & 0o777;
 
 /** `{"bot-selftest/SKILL.md": "sha…"}` — the last thing we wrote, per file. */
 type Ledger = Record<string, string>;
@@ -93,7 +104,8 @@ export function seedSkills(
   for (const name of names) {
     for (const rel of skillFiles(join(source, name))) {
       const key = `${name}/${rel}`;
-      const wanted = readFileSync(join(source, name, rel), "utf8");
+      const from = join(source, name, rel);
+      const wanted = readFileSync(from, "utf8");
       const path = join(target, name, rel);
 
       if (existsSync(path)) {
@@ -111,12 +123,13 @@ export function seedSkills(
         if (!opts.dryRun) {
           mkdirSync(dirname(path), { recursive: true });
           writeFileSync(path, wanted);
+          chmodSync(path, mode(from));
         }
         updated.push(key);
       } else {
         if (!opts.dryRun) {
           mkdirSync(dirname(path), { recursive: true });
-          writeFileSync(path, wanted);
+          writeFileSync(path, wanted, { mode: mode(from) });
         }
         added.push(key);
       }

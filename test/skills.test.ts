@@ -5,10 +5,21 @@
  * no matter how many versions go by.
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { hoobotPaths, installedSkills, packagedSkillsDir, seedSkills, skillNames } from "../src/skills.ts";
+
+/** The repo root — the package directory in a checkout, the same in a tarball. */
+const packageRootForTest = () => resolve(import.meta.dir, "..");
+
+/** Every file under a folder, recursively. */
+function walk(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+    const full = join(dir, e.name);
+    return e.isDirectory() ? walk(full) : [full];
+  });
+}
 
 let work: string;
 let source: string;
@@ -96,10 +107,6 @@ test("a dry run reports without writing", () => {
 });
 
 test("the package ships skills, and every one is a real skill", () => {
-  // Shipping the folder without listing it in `files` is the quiet way to
-  // make a new machine get nothing at all.
-  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  expect(pkg.files).toContain("skills");
 
   const names = skillNames();
   expect(names.length).toBeGreaterThan(0);
@@ -248,6 +255,56 @@ test("a skill resolves paths without needing the hoobot that ships it", () => {
       expect(text.indexOf("HOO_PATHS() {"), name).toBeLessThan(text.indexOf("$(HOO_PATHS "));
     }
   }
+});
+
+test("a script keeps its executable bit when it lands", () => {
+  // Found on a fresh machine: every seeded .sh arrived 0644. Everything
+  // worked until someone ran one directly and got a permission error that
+  // said nothing about permissions. The mode is part of the file.
+  const from = join(source, "greet", "scripts", "run.sh");
+  chmodSync(from, 0o755);
+  seedSkills(work, { source });
+  const seeded = skill("greet", "scripts/run.sh");
+  expect(statSync(seeded).mode & 0o111).toBeTruthy();
+
+  // And a refresh must not quietly drop it again.
+  chmodSync(from, 0o755);
+  writeFileSync(from, "#!/bin/sh\necho v2\n");
+  seedSkills(work, { source });
+  expect(statSync(seeded).mode & 0o111).toBeTruthy();
+});
+
+test("a fresh workspace is executable, out of the box", () => {
+  const fresh = mkdtempSync(join(tmpdir(), "skills-fresh-"));
+  try {
+    seedSkills(fresh);
+    const scripts = skillNames().flatMap((name) =>
+      walk(join(packagedSkillsDir(), name))
+        .filter((f) => f.endsWith(".sh"))
+        .map((f) => join(fresh, ".cortexcode", "skills", name, relative(join(packagedSkillsDir(), name), f))),
+    );
+    expect(scripts.length).toBeGreaterThan(0);
+    for (const path of scripts) {
+      expect(existsSync(path), path).toBe(true);
+      expect(statSync(path).mode & 0o111, path).toBeTruthy();
+    }
+  } finally {
+    rmSync(fresh, { recursive: true, force: true });
+  }
+});
+
+test("the package ships everything the skills need at runtime", () => {
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  expect(pkg.files).toContain("skills");
+  expect(pkg.files).toContain("scripts");
+  expect(pkg.files).toContain("src");
+
+  // peer-sync restarts bots through this, and resolves it through paths.sh,
+  // so both have to be in the tarball — a skill that reaches outside the
+  // package works on the author's machine and nowhere else.
+  expect(existsSync(join(packagedSkillsDir(), "bot-slack", "scripts", "paths.sh"))).toBe(true);
+  expect(existsSync(join(packagedSkillsDir(), "bot-slack", "scripts", "peer-sync.ts"))).toBe(true);
+  expect(existsSync(join(packageRootForTest(), "scripts", "runtime.sh"))).toBe(true);
 });
 
 test("hoobot path answers for every key it advertises", () => {

@@ -130,6 +130,20 @@ scripts/service.sh uninstall   # stop + remove
 - Service file: `~/Library/LaunchAgents/com.hoo.hoobot.plist`
 - Log: `~/.local/state/hoobot/bot.log`
 
+## Checking the package
+
+`files` in package.json decides what reaches a machine, not the source tree,
+and a forgotten entry ships a bot whose skills silently do not exist.
+
+```sh
+bun run verify:pack
+```
+
+It reads what `npm pack` would actually produce and asserts the bot's runtime
+needs are in there — `src/skills.ts`, `scripts/runtime.sh`, every bundled
+skill with usable frontmatter, and the scripts those skills run. It runs in
+CI, and in the release workflow via `bun run check`.
+
 The Mac must be awake and logged in for the bot to answer.
 
 ## Several bots from one checkout
@@ -260,6 +274,29 @@ and check `socket_mode=ok`, because a token that cannot open a websocket
 produces a bot that looks fine until someone mentions it. The bot also joins
 a channel by itself with `channels:join`, so it needs telling *which*
 channel, not being invited.
+
+Apps install into the **deployed** environment, not `local`. A local install
+is a development app, and Slack says so in the name it gives everybody else:
+the app becomes `hee (local)` and its bot user `hee_local`, so the bot is
+`@hee_local` in every mention and no edit to `display_information.name`
+moves it. The deployed environment gives the plain name and costs nothing,
+since hoobot runs the app itself rather than Slack's runtime.
+
+### Peers
+
+A bot's Slack user id changes every time its app is recreated — a revoked
+token, a rename, a move off the `_local` name. A stale id is the quietest
+failure there is: no error, the bot stays connected, it simply never
+answers. So no id is ever written by hand:
+
+```sh
+bun "$(hoobot path skills)/bot-slack/scripts/peer-sync.ts" --dry-run
+bun "$(hoobot path skills)/bot-slack/scripts/peer-sync.ts"
+```
+
+Every bot goes in every other bot's list — a peer mesh, not a ring — and a
+bot that cannot authenticate is reported rather than wired in, because
+pointing peers at a dead id is precisely what this prevents.
 
 The order for any bot change is **Slack → manager → Slack again to confirm →
 restart → selftest**. See the `bot-slack`, `slack-bot-create` and

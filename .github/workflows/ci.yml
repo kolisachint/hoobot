@@ -31,3 +31,8 @@ jobs:
 
       - name: Package contents
         run: npm pack --dry-run
+
+      - name: Package is shippable
+        # `files` decides what reaches a machine, not the source tree. A
+        # forgotten entry ships a bot whose skills silently do not exist.
+        run: bun run verify:pack
