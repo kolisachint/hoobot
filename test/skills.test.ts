@@ -158,10 +158,30 @@ test("the Slack half refuses to pretend it worked", () => {
   expect(app).toContain("app_mentions:read");
   // The confirmation whose default is "keep the app".
   expect(app).toContain("will not be deleted");
-  // The two strings Slack will not hand out any other way, named as ours to
-  // ask for and not ours to fetch.
-  expect(app).toContain("xoxb-");
-  expect(app).toContain("xapp-");
+  // The one call that returns both tokens in full.
+  expect(app).toContain("apps.developerInstall");
+  expect(app).toContain("api_access_tokens");
+  // Omitting these hands back a token that answers account_inactive on a
+  // perfectly healthy app, which reads as a revoked token.
+  expect(app).toContain("bot_scopes");
+  // And a token that cannot open a websocket is a bot that looks healthy
+  // until it is mentioned.
+  expect(app).toContain("apps.connections.open");
+});
+
+test("no skill sends the user to a browser for something we can do", () => {
+  const read = (name: string) => readFileSync(join(packagedSkillsDir(), name, "SKILL.md"), "utf8");
+
+  // The tokens are fetchable. A skill that still tells someone to copy an
+  // xoxb- off a settings page is asking for busywork.
+  for (const name of skillNames()) {
+    const text = read(name);
+    expect(text, name).not.toMatch(/copy the .{0,12}(xoxb|xapp)/i);
+    expect(text, name).not.toMatch(/Install\/Reinstall to workspace/i);
+    expect(text, name).not.toMatch(/the two tokens \(only the user\)/i);
+  }
+  expect(read("slack-bot-create")).toContain("tokens <name> --write");
+  expect(read("bot-slack")).toContain("developerInstall");
 });
 
 test("a skill resolves paths without needing the hoobot that ships it", () => {

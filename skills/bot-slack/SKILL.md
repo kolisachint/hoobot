@@ -43,8 +43,8 @@ S="$(HOO_PATHS skills)/bot-slack/scripts"
 # 1. Slack: create the app from the manifest, install it, upload the icon
 bun "$S/slack-app.ts" create hee --description "hoo's companion" --icon /tmp/hee.png
 
-# 2. hoobot manager: put the details and the tokens into the bot's .env
-#    (the manager API, or its page at $(HOO_PATHS manager))
+# 2. fetch both tokens and write them into the bot's .env
+bun "$S/slack-app.ts" tokens hee --write
 
 # 3. Slack: prove the app is really there and really installed
 bun "$S/slack-app.ts" verify hee
@@ -53,36 +53,72 @@ bun "$S/slack-app.ts" verify hee
 bash "$(HOO_PATHS selftest)" hee
 ```
 
+Steps 1–3 are unattended. Step 4 needs someone to type a mention in Slack,
+because that is the only real test of a bot.
+
 Step 1 prints:
 
 ```
-app_id=A0C69HXDC6P
-bot_user_id=U0C6KF537J8
+app_id=A0C69MAUQ8K
+bot_user_id=U0C6AK07ATF
 team_id=T0C5ASK6J4E
 ```
 
 **Keep `bot_user_id`.** That is what goes in `PEER_BOT_IDS` on the *other*
 bot. Guessing it is how companion bots end up mentioning nobody.
 
-## The two things only the user can do
+## The tokens come from Slack, not from a browser
 
-Slack shows these on the app's pages and nowhere else — no API, no CLI, not
-even to a workspace admin. Say this plainly, once, and do not repeat it:
+This is the part that used to be the user's job, and it is not any more.
 
-| String | Where | Env key |
-|---|---|---|
-| Bot token `xoxb-…` | OAuth & Permissions → Bot Token Scopes → **Install / Reinstall to workspace** | `SLACK_BOT_TOKEN` |
-| App token `xapp-…` | Basic Information → **App-Level Tokens** → Generate | `SLACK_APP_TOKEN` |
+```sh
+bun "$S/slack-app.ts" tokens hee --write
+```
 
-The app-level token is only created with the `connections:write` scope.
-Without it Socket Mode cannot open and the bot never receives a message,
-however healthy the process looks.
+```
+SLACK_BOT_TOKEN=xoxb-…
+SLACK_APP_TOKEN=xapp-1-…
+bot_user_id=U0C6AK07ATF
+socket_mode=ok
+```
+
+One call, `apps.developerInstall`, returns the bot token and the app-level
+token together. It authenticates with the token `slack login` already stored,
+and it is the same endpoint the CLI uses when you run `slack api --app <id>`
+or `slack run` — so this is not a private back door, it is how the official
+CLI does it. Nothing else returns these in full: the app's OAuth page shows
+them to a human, but a program has no other way to get them.
+
+Two things that are easy to get wrong:
+
+- **`bot_scopes` is not optional.** Leave it out and Slack still hands over a
+  token — one that answers every call with `account_inactive`, which is the
+  shape of a revoked token on a perfectly healthy app. It sends you off to
+  reinstall something that was never broken.
+- **`socket_mode=ok` is printed, not assumed.** A token that cannot open a
+  Socket Mode websocket produces a bot that looks healthy until someone
+  mentions it.
+
+`--write` sets the keys in place, so comments and ordering survive, and
+chmods the file to 600.
+
+## Joining a channel
+
+The bot does not need to be invited: `channels:join` lets it add itself.
+
+```sh
+curl -X POST https://slack.com/api/conversations.join \
+  -H "Authorization: Bearer $SLACK_BOT_TOKEN" -d "channel=C0C4XDWM19V"
+```
+
+So the only thing still asked of a person is *which* channel.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `create <bot>` | Project + manifest, install, upload icon, print ids |
+| `tokens <bot>` | Fetch both tokens; `--write` saves them into the `.env` |
 | `sync <bot>` | Push manifest edits and a new icon to the existing app |
 | `verify <bot>` | App id, bot user id, installed?, scopes Slack really has |
 | `token <bot>` | Just the bot user id, for `PEER_BOT_IDS` |
@@ -146,12 +182,11 @@ upload.
 
 ## Repairing a dead token
 
-`account_inactive` or `invalid_auth` means the app was uninstalled or the
-token was reset. The app itself is usually still there:
+`account_inactive` or `invalid_auth` means the token was revoked or minted
+without scopes. Re-fetch it rather than reinstalling anything:
 
 ```sh
-bun "$S/slack-app.ts" verify hee        # is the app installed?
-bun "$S/slack-app.ts" sync hee          # reinstall it to the workspace
+bun "$S/slack-app.ts" tokens hee --write
 ```
 
 If the app is gone too, recreate it — but the bot user id changes, so fix
@@ -172,7 +207,7 @@ is the only thing that proves the wiring.
 | `not a TTY` | the CLI refused | use `slack-app.ts`; it runs the CLI in a pty |
 | `your app will not be deleted` | Enter took the default (Cancel) | `delete` sends Down+Enter for you |
 | `installation_required` | app exists but is not installed | `sync` reinstalls it |
-| `invalid_auth` on `auth.test` | app-level token missing or wrong | user copies `xapp-…` again |
-| `account_inactive` | app uninstalled or token reset | `sync`, then new tokens |
+| `invalid_auth` on `auth.test` | app-level token missing or wrong | `tokens <bot> --write` |
+| `account_inactive` | token revoked, or minted without `bot_scopes` | `tokens <bot> --write` |
 | bot ignores mentions | missing `app_mentions:read`, or events off | `sync`, reinstall, re-copy tokens |
 | companion silent | peer id wrong or one-way | `token <bot>` on both, set `PEER_BOT_IDS` both ways |

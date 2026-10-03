@@ -243,9 +243,23 @@ bun "$(hoobot path skills)/bot-slack/scripts/slack-app.ts" create hee \
 ```
 
 That prints the app id and the bot's user id — the latter is what
-`PEER_BOT_IDS` needs, so a companion bot does not have to be guessed at. Two
-strings stay the user's to copy, because Slack shows them on the app's pages
-and nowhere else: the `xoxb-` bot token and the `xapp-` app-level token.
+`PEER_BOT_IDS` needs, so a companion bot does not have to be guessed at.
+
+Both tokens come from Slack too, in one call, and go straight into the bot's
+`.env`:
+
+```sh
+bun "$(hoobot path skills)/bot-slack/scripts/slack-app.ts" tokens hee --write
+```
+
+`apps.developerInstall` returns the `xoxb-` bot token and the `xapp-`
+app-level token together — the same endpoint `slack api --app <id>` and
+`slack run` use. Two details that are easy to get wrong: send `bot_scopes`,
+or Slack hands back a token that answers `account_inactive` on a healthy app;
+and check `socket_mode=ok`, because a token that cannot open a websocket
+produces a bot that looks fine until someone mentions it. The bot also joins
+a channel by itself with `channels:join`, so it needs telling *which*
+channel, not being invited.
 
 The order for any bot change is **Slack → manager → Slack again to confirm →
 restart → selftest**. See the `bot-slack`, `slack-bot-create` and

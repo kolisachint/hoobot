@@ -31,8 +31,8 @@ const argv = process.argv.slice(2);
 const command = argv[0];
 const name = argv[1];
 
-if (!command || !["create", "sync", "verify", "token", "delete", "id"].includes(command)) {
-  console.error(`usage: slack-app.ts <create|sync|verify|token|delete|id> <bot> [options]
+if (!command || !["create", "sync", "verify", "token", "tokens", "delete", "id"].includes(command)) {
+  console.error(`usage: slack-app.ts <create|sync|verify|token|tokens|id|delete> <bot> [options]
 
   --description <text>   one line for the app's description
   --long-description <text>
@@ -40,7 +40,7 @@ if (!command || !["create", "sync", "verify", "token", "delete", "id"].includes(
   --background-color <#hex>
   --icon <file.png>      uploaded as the app icon on create and sync
   --runtime <dir>        the hoobot runtime folder (default: hoobot path runtime)
-  --yes                  assume yes; do not prompt
+  --write                tokens: save them into the bot's .env as well as printing
 `);
   process.exit(command ? 0 : 64);
 }
@@ -53,6 +53,8 @@ const flag = (key: string): string | undefined => {
   const i = argv.indexOf(`--${key}`);
   return i >= 0 ? argv[i + 1] : undefined;
 };
+/** `--write` has no value, so asking flag() for one returns the next flag. */
+const on = (key: string): boolean => argv.includes(`--${key}`);
 const runtime = flag("runtime")?.replace(/^~(?=\/|$)/, process.env.HOME ?? "~") ?? runtimeDir();
 const projectDir = join(runtime, "slack", name ?? "");
 const ptyScript = join(import.meta.dir, "slack-pty.sh");
@@ -233,6 +235,50 @@ SLACK_APP_TOKEN, start the bot, then check it end to end:
   const test = verify(record.appId);
   if (!test.userId) fail(`could not read the bot user: ${test.error ?? "no user id"}`);
   console.log(test.userId);
+} else if (command === "tokens") {
+  const record = appRecord() ?? fail(`no Slack project for “${name}”. Create it first: slack-app.ts create ${name}`);
+  const userToken = slackUserToken(record.teamId);
+  if (!userToken) fail(`not logged in to Slack. Run: slack login`);
+
+  // The endpoint the CLI itself calls to authenticate as the app. It is
+  // undocumented but not private: `slack api --app <id>` and `slack run`
+  // both go through it, and it is the only place either token is ever
+  // returned in full — the app's OAuth page shows them to a human, but a
+  // program has no other way to get them. Both come back from one call.
+  //
+  // `bot_scopes` is not optional in practice. Left out, Slack still hands
+  // over a token, and that token answers every call with
+  // `account_inactive` — the shape of a dead token, for a live app, which
+  // sends you off to reinstall something that was never broken.
+  const scopes = manifestScopes();
+  const res = await fetch("https://slack.com/api/apps.developerInstall", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${userToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ app_id: record.appId, ...(scopes ? { bot_scopes: scopes } : {}) }),
+  });
+  const json = (await res.json()) as { ok?: boolean; error?: string; api_access_tokens?: { bot?: string; app_level?: string } };
+  if (!json.ok || !json.api_access_tokens?.bot || !json.api_access_tokens?.app_level) {
+    fail(`Slack would not hand over the tokens: ${json.error ?? "no tokens in the reply"}`);
+  }
+  const bot = json.api_access_tokens.bot;
+  const appToken = json.api_access_tokens.app_level;
+
+  // Never report success on a token that does not work: `connections.open`
+  // is the one that proves Socket Mode, and a bot that cannot open a
+  // websocket looks perfectly healthy until someone mentions it.
+  const opened = await socketModeOk(appToken);
+  console.log(`SLACK_BOT_TOKEN=${bot}`);
+  console.log(`SLACK_APP_TOKEN=${appToken}`);
+  console.log(`bot_user_id=${verify(record.appId).userId ?? "?"}`);
+  console.log(`socket_mode=${opened ? "ok" : "FAILED"}`);
+
+  if (on("write")) {
+    const envPath = join(runtime, name!, ".env");
+    if (!existsSync(envPath)) fail(`no .env at ${envPath}. Create the bot first: slack-bot-create`);
+    writeEnvKeys(envPath, { SLACK_BOT_TOKEN: bot, SLACK_APP_TOKEN: appToken });
+    console.log(`\nwritten to ${envPath} (mode 600)`);
+    console.log("restart the bot, then: bash \"$(…/paths.sh)\" selftest " + name);
+  }
 } else if (command === "id") {
   const record = appRecord();
   console.log(record?.appId ?? "");
@@ -259,4 +305,55 @@ function verify(appId: string): { ok: boolean; userId?: string; user?: string; e
   } catch {
     return { ok: false, error: out.trim().split("\n").pop() ?? "no answer" };
   }
+}
+
+/** The bot scopes this app was installed with — what the token is minted for. */
+function manifestScopes(): string[] | undefined {
+  const path = join(projectDir, "manifest.json");
+  if (!existsSync(path)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { oauth_config?: { scopes?: { bot?: string[] } } };
+    const scopes = parsed.oauth_config?.scopes?.bot;
+    return scopes?.length ? scopes : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The token `slack login` stored, for the team this app is installed to. */
+function slackUserToken(teamId: string): string | undefined {
+  const path = join(process.env.HOME ?? "~", ".slack", "credentials.json");
+  if (!existsSync(path)) return undefined;
+  try {
+    const creds = JSON.parse(readFileSync(path, "utf8")) as Record<string, { token?: string }>;
+    return creds[teamId]?.token;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Does this app-level token open a Socket Mode connection? */
+async function socketModeOk(appToken: string): Promise<boolean> {
+  try {
+    const res = await fetch("https://slack.com/api/apps.connections.open", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${appToken}` },
+    });
+    const json = (await res.json()) as { ok?: boolean; url?: string };
+    return Boolean(json.ok && json.url);
+  } catch {
+    return false;
+  }
+}
+
+/** Set keys in the .env in place, so comments and ordering survive. */
+function writeEnvKeys(path: string, keys: Record<string, string>): void {
+  const lines = existsSync(path) ? readFileSync(path, "utf8").split("\n") : [];
+  for (const [key, value] of Object.entries(keys)) {
+    const line = `${key}=${value}`;
+    const at = lines.findIndex((l) => (l.split("=")[0] ?? "").trim() === key);
+    if (at >= 0) lines[at] = line;
+    else lines.push(line);
+  }
+  writeFileSync(path, lines.join("\n").replace(/\n+$/, "\n"), { mode: 0o600 });
 }

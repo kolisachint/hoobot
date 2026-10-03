@@ -29,15 +29,16 @@ tail -30 "$(HOO_PATHS runtime)/<name>/<name>.log"                               
 
 Say it in two groups, and never pad the first with the second.
 
-**Only the user** (Slack keeps these to the app's own pages — no API, no
-CLI, not even for a workspace admin):
-- Copying the bot token `xoxb-…` and the app-level token `xapp-…` after a
-  create, reinstall or scope change.
-- `/invite @bot` into a channel.
-- `slack login`, if the Slack CLI is not logged in.
+**Only the user** (a decision, not a limitation — everything mechanical is
+ours to do):
+- Which channel the bot should work in. It joins that one itself.
+- The first mention, because only a person types in Slack.
 
-Everything else we can do ourselves, including creating the app, changing
-its scopes, reinstalling it and uploading its icon — see `bot-slack`.
+`slack login` is only theirs if the CLI is not logged in.
+
+Everything else we do ourselves: creating the app, changing its scopes,
+reinstalling it, uploading its icon, and fetching both tokens — see
+`bot-slack`.
 
 **Us** (just do it, then report it done):
 - `.env` keys, ports, peer wiring, workdirs, restarts, avatar seeds.

@@ -54,37 +54,28 @@ Copy the existing bot's `.env` as the template and change:
 | `HOO_WORKDIR` | shared, if it should see another bot's files |
 | `HOO_AVATAR_*` | seed, shape, style, palette from the avatar above |
 | `PEER_BOT_IDS` | leave empty until step 5 |
-| `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` | empty for now |
+| `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` | `xoxb-` / `xapp-PLACEHOLDER`; step 3 replaces both |
 | `HOO_SURFACES` | `slack`, so the manager draws the Slack boxes |
 
-Set `SLACK_BOT_TOKEN=xoxb-PLACEHOLDER` rather than leaving it truly empty
-if the manager insists a bot has no token to be saved at all.
 `chmod 600`. The manager rewrites it in place and keeps comments.
 
-## 3. Slack again: confirm before trusting any of it
+## 3. Slack again: fetch the tokens
+
+```sh
+bun "$S/slack-app.ts" tokens <name> --write
+```
+
+Both tokens, fetched from Slack and written into the `.env` above — no
+browser, no copy-paste. Confirm it worked before going further:
 
 ```sh
 bun "$S/slack-app.ts" verify <name>
 ```
 
 `installed=yes` and a bot user id. If it says no, fix it now rather than
-after the tokens are pasted — the tokens would be minted for nothing.
+after the tokens are written; they would be minted for nothing.
 
-## 4. The two tokens (only the user)
-
-Slack shows these on the app's pages and nowhere else — no API, no CLI, not
-even to a workspace admin. Say this once, plainly:
-
-| String | Where | Env key |
-|---|---|---|
-| `xoxb-…` | OAuth & Permissions → Install/Reinstall to workspace | `SLACK_BOT_TOKEN` |
-| `xapp-…` | Basic Information → App-Level Tokens → Generate (`connections:write`) | `SLACK_APP_TOKEN` |
-
-Paste each into the manager page or the `.env`. Add the human to
-`ALLOWED_USER_IDS` (profile → ⋮ → Copy member ID) — the bot refuses to
-start without one.
-
-## 5. Manager: start, invite, wire the peers
+## 4. Manager: start, invite, wire the peers
 
 - Restart the bot (manager Restart, or `runtime.sh restart <name>`).
 - `/invite @<name>` in a channel. Without it the bot sees nothing, and
@@ -94,7 +85,7 @@ start without one.
   companion.
 - Restart both.
 
-## 6. Prove it answers
+## 5. Prove it answers
 
 ```sh
 bash "$(HOO_PATHS selftest)" <name>
