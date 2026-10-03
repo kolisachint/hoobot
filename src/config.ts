@@ -1,6 +1,7 @@
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { seedSkills } from "./skills.ts";
 
 function optional(name: string): string | undefined {
   return process.env[name]?.trim() || undefined;
@@ -168,6 +169,13 @@ export function prepareWorkspace(workdir = config.workdir) {
   }
   const chats = surfaces();
   writeGenerated(promptPath, chats.length === 1 && chats[0] === "discord" ? systemPrompt(ask) : chatPrompt(ask, chats), variants);
+
+  // The skills hoobot ships, so a fresh machine has them on the first boot.
+  // Anything the user has edited is left alone (see src/skills.ts).
+  const { added, updated, kept } = seedSkills(workdir);
+  if (added.length) console.log(`Seeded ${added.length} skill file(s) into ${join(hooDir, "skills")}`);
+  if (updated.length) console.log(`Updated ${updated.length} bundled skill file(s) to this version (${updated.join(", ")})`);
+  if (kept.length) console.log(`Kept ${kept.length} locally edited skill file(s): ${kept.join(", ")}`);
 }
 
 type Chat = "discord" | "slack";

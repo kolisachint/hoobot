@@ -33,6 +33,40 @@ verifying against.
 - Editing `src/` does **not** change the running bot. Ship it
   (tag + publish) and `bun add -g` picks it up on the next
   `RUN_FROM_NPM=1` start. Say so plainly rather than implying a live fix.
+- The `slack/` folder under the runtime dir holds Slack CLI projects, not
+  bots, and is reserved. Instances live in `~/.hoobot/runtime/<name>/`.
+
+## Skills ship in the package
+
+`skills/` is in the npm tarball, and `prepareWorkspace()` seeds it into
+`<workdir>/.cortexcode/skills` on first boot. That is why `bun add -g` is the
+whole install on a new machine — the agent can already create bots, update
+them and check them.
+
+Two consequences worth knowing before you touch them:
+
+- **Skills cannot hard-code paths.** They are copied between machines, so
+  they ask `paths.sh` (next to the bot-slack scripts), which tries
+  `hoobot path` and falls back to the documented layout. Use it instead of
+  writing a path literally.
+- **Never overwrite one.** A skill hoobot wrote is hoobot's to update; a
+  skill a person wrote is theirs. `src/skills.ts` keeps hashes in
+  `.generated.json` and leaves a changed file alone. Add to `skills/`, or
+  put it somewhere else — not over the top.
+
+## Bot ids are not stable
+
+A bot's Slack user id changes every time its app is recreated. After any
+`create`, `tokens`, or rename, rewire the mesh rather than editing
+`PEER_BOT_IDS`:
+
+```sh
+bun "$(…/skills/bot-slack/scripts/peer-sync.ts)" --dry-run
+```
+
+It reads every id from Slack via each bot's own token, so a bot whose app is
+dead is reported instead of being wired in. Stale ids produce no error at
+all — the bot stays connected and simply never answers.
 
 ## Other notes
 

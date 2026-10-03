@@ -130,6 +130,20 @@ scripts/service.sh uninstall   # stop + remove
 - Service file: `~/Library/LaunchAgents/com.hoo.hoobot.plist`
 - Log: `~/.local/state/hoobot/bot.log`
 
+## Checking the package
+
+`files` in package.json decides what reaches a machine, not the source tree,
+and a forgotten entry ships a bot whose skills silently do not exist.
+
+```sh
+bun run verify:pack
+```
+
+It reads what `npm pack` would actually produce and asserts the bot's runtime
+needs are in there — `src/skills.ts`, `scripts/runtime.sh`, every bundled
+skill with usable frontmatter, and the scripts those skills run. It runs in
+CI, and in the release workflow via `bun run check`.
+
 The Mac must be awake and logged in for the bot to answer.
 
 ## Several bots from one checkout
@@ -191,6 +205,102 @@ so a bot keeps its face with no image stored anywhere.
 
 `MANAGER_PORT=off` disables it; the page is served from `web/` with no build
 step. Design: [docs/design/20-bot-manager-ui.md](docs/design/20-bot-manager-ui.md).
+
+## Skills
+
+Some instructions are worth shipping with the bot rather than retyping on
+every machine: how to create a Slack app, how to update an instance, how to
+make a good avatar, how to check that everything still works. Those live in
+[`skills/`](skills) and ship inside the npm package, so
+
+```sh
+bun add -g @kolisachint/hoobot
+```
+
+is the whole install — the bot seeds them into `<workdir>/.cortexcode/skills`
+on its first boot and the agent can already do the things they describe.
+
+The rule is the same one the config and the system prompt use, and it exists
+for the same reason: **a skill hoobot wrote is hoobot's to update; a skill
+you wrote is yours.** Each seeded file's hash is recorded in
+`.cortexcode/skills/.generated.json`, so upgrading hoobot refreshes the
+bundled files and leaves a local edit exactly as you wrote it. Startup says
+which of the two happened:
+
+```
+Seeded 12 skill file(s) into …/.cortexcode/skills
+Kept 2 locally edited skill file(s): bot-selftest/SKILL.md, …
+```
+
+Skills are copied between machines, so none of them hard-codes a path. The
+one place that knows where things are is:
+
+```sh
+hoobot path            # every path, one per line
+hoobot path selftest   # just that one
+```
+
+`package`, `runtime`, `workdir`, `skills`, `manager`, `runtime-script`,
+`selftest`, `avatar-png`.
+
+### Bots are Slack apps, and the Slack CLI does that part
+
+The `bot-slack` skill creates, updates, verifies and deletes a bot's Slack
+app with Slack's own CLI — the manifest, the install, the scopes and the
+app icon. It exists because the CLI only runs from a terminal: `slack-pty.sh`
+gives it a pty and presses Enter, so one command does what used to be a
+browser flow.
+
+```sh
+bun "$(hoobot path skills)/bot-slack/scripts/slack-app.ts" create hee \
+  --description "hoo's companion" --icon /tmp/hee.png
+```
+
+That prints the app id and the bot's user id — the latter is what
+`PEER_BOT_IDS` needs, so a companion bot does not have to be guessed at.
+
+Both tokens come from Slack too, in one call, and go straight into the bot's
+`.env`:
+
+```sh
+bun "$(hoobot path skills)/bot-slack/scripts/slack-app.ts" tokens hee --write
+```
+
+`apps.developerInstall` returns the `xoxb-` bot token and the `xapp-`
+app-level token together — the same endpoint `slack api --app <id>` and
+`slack run` use. Two details that are easy to get wrong: send `bot_scopes`,
+or Slack hands back a token that answers `account_inactive` on a healthy app;
+and check `socket_mode=ok`, because a token that cannot open a websocket
+produces a bot that looks fine until someone mentions it. The bot also joins
+a channel by itself with `channels:join`, so it needs telling *which*
+channel, not being invited.
+
+Apps install into the **deployed** environment, not `local`. A local install
+is a development app, and Slack says so in the name it gives everybody else:
+the app becomes `hee (local)` and its bot user `hee_local`, so the bot is
+`@hee_local` in every mention and no edit to `display_information.name`
+moves it. The deployed environment gives the plain name and costs nothing,
+since hoobot runs the app itself rather than Slack's runtime.
+
+### Peers
+
+A bot's Slack user id changes every time its app is recreated — a revoked
+token, a rename, a move off the `_local` name. A stale id is the quietest
+failure there is: no error, the bot stays connected, it simply never
+answers. So no id is ever written by hand:
+
+```sh
+bun "$(hoobot path skills)/bot-slack/scripts/peer-sync.ts" --dry-run
+bun "$(hoobot path skills)/bot-slack/scripts/peer-sync.ts"
+```
+
+Every bot goes in every other bot's list — a peer mesh, not a ring — and a
+bot that cannot authenticate is reported rather than wired in, because
+pointing peers at a dead id is precisely what this prevents.
+
+The order for any bot change is **Slack → manager → Slack again to confirm →
+restart → selftest**. See the `bot-slack`, `slack-bot-create` and
+`slack-bot-update` skills.
 
 ## Health
 
@@ -303,6 +413,7 @@ the thread; the first answer wins and the others see it resolved.
 | `src/discord.ts` | Discord side: mentions and replies → calls; channels and threads → spaces; buttons, menus |
 | `src/slack.ts` | Slack side (Socket Mode): mentions → calls; channels and threads → spaces; Block Kit buttons, menus |
 | `src/peers.ts` | Peer bots: turns per thread, `@name` → Slack mention |
+| `src/skills.ts` | The bundled `skills/`, seeded into a work folder without clobbering local edits; `hoobot path` |
 | `src/mrkdwn.ts` | Markdown → Slack mrkdwn, and Slack text → plain text |
 | `src/context.ts` | What people said since the bot last read a space |
 | `src/session.ts` | One app-server thread per channel or thread; notifications → messages, buttons → approvals |
@@ -316,7 +427,7 @@ the thread; the first answer wins and the others see it resolved.
 | `src/manager.ts` | The bot manager: its API, and the page from `web/` on 127.0.0.1:8790 |
 | `src/instances.ts` | `runtime/<name>/.env` read/write, list, create, delete; the fields the UI shows |
 | `src/power.ts` | On a Mac: whether anything is keeping it awake, so the UI can warn ([design](docs/design/21-sleeping-on-a-mac.md)) |
-| `src/avatar.ts` | A seed → an inline SVG avatar (circle or squircle, six palettes) |
+| `src/avatar.ts` | A seed → an inline SVG avatar (circle or squircle, dots or pet, six palettes) |
 | `web/` | The manager page: `index.html`, `app.js`, `style.css` — no build step |
 | `scripts/runtime.sh` | `init`/`start`/`stop`/`restart`/`status`/`health`/`logs` for one instance in `runtime/<name>/` |
 | `workspace/` | hoocode's working folder (git-ignored); sessions are saved by hoocode |

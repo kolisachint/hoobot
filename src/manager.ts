@@ -31,7 +31,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { avatarSvg, AVATAR_SHAPES, hashSeed, PALETTES } from "./avatar.ts";
+import { avatarSvg, AVATAR_SHAPES, AVATAR_STYLES, hashSeed, PALETTES, type AvatarStyle } from "./avatar.ts";
 import { powerState } from "./power.ts";
 import {
   createInstance,
@@ -148,6 +148,7 @@ export async function managerBody(dir?: string): Promise<Record<string, unknown>
     fields: FIELDS,
     palettes: Object.entries(PALETTES).map(([id, p]) => ({ id, label: p.label, from: p.from, to: p.to })),
     shapes: AVATAR_SHAPES,
+    styles: AVATAR_STYLES,
     instances: await liveInstances(dir),
     // On a Mac, whether anything is keeping it awake while bots run.
     power: await powerState(),
@@ -241,6 +242,7 @@ export function createFromForm(body: Record<string, unknown>, dir?: string): Ins
   }
   if (body.avatarSeed !== undefined) config.HOO_AVATAR_SEED = str(body.avatarSeed);
   if (str(body.avatarShape)) config.HOO_AVATAR_SHAPE = str(body.avatarShape);
+  if (str(body.avatarStyle)) config.HOO_AVATAR_STYLE = str(body.avatarStyle);
   if (body.avatarPalette !== undefined) config.HOO_AVATAR_PALETTE = str(body.avatarPalette);
   config.HOO_SURFACES = surfaces.join(",");
   return createInstance({ name, surfaces, workdir: str(body.workdir), config, secrets, dir });
@@ -283,8 +285,10 @@ export async function handleApi(req: Request, deps: ManagerDeps = {}): Promise<R
     const seed = wanted === null || wanted === "" ? hashSeed(name ?? "preview") : Number(wanted);
     const shape = url.searchParams.get("shape") ?? "circle";
     const palette = url.searchParams.get("palette") ?? undefined;
+    const style = url.searchParams.get("style") ?? "dots";
     const svg = avatarSvg(Number.isFinite(seed) ? seed : 0, {
       shape: AVATAR_SHAPES.includes(shape as "circle") ? (shape as "circle" | "squircle") : "circle",
+      style: AVATAR_STYLES.includes(style as "pet") ? (style as "dots" | "pet") : "dots",
       palette,
       name,
     });
@@ -330,7 +334,13 @@ export async function handleApi(req: Request, deps: ManagerDeps = {}): Promise<R
     const seed = Number(url.searchParams.get("seed") ?? instance?.avatarSeed ?? hashSeed(name));
     const shape = (url.searchParams.get("shape") ?? instance?.avatarShape ?? "circle") as "circle" | "squircle";
     const palette = url.searchParams.get("palette") ?? instance?.avatarPalette ?? undefined;
-    const svg = avatarSvg(seed, { shape: AVATAR_SHAPES.includes(shape) ? shape : "circle", palette, name });
+    const style = url.searchParams.get("style") ?? instance?.avatarStyle ?? "dots";
+    const svg = avatarSvg(seed, {
+      shape: AVATAR_SHAPES.includes(shape) ? shape : "circle",
+      style: AVATAR_STYLES.includes(style as AvatarStyle) ? (style as AvatarStyle) : "dots",
+      palette,
+      name,
+    });
     return new Response(svg, { headers: { "content-type": "image/svg+xml", "cache-control": "no-store" } });
   }
 

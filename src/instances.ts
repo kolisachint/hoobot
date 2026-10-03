@@ -16,10 +16,12 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { hashSeed, type AvatarShape } from "./avatar.ts";
+import { hashSeed, type AvatarShape, type AvatarStyle } from "./avatar.ts";
 
 /** Folder names under `runtime/` that are not bots. */
-const RESERVED = new Set(["shared", "manager", "workspace", "node_modules", "logs"]);
+/** Folders in the runtime dir that are not bots. `slack` holds the Slack
+ *  CLI projects the `bot-slack` skill creates; it is not an instance. */
+const RESERVED = new Set(["shared", "manager", "workspace", "node_modules", "logs", "slack"]);
 
 export function repoRoot(): string {
   return resolve(import.meta.dir, "..");
@@ -250,6 +252,7 @@ export const FIELDS: Field[] = [
 
   { key: "HOO_AVATAR_SEED", label: "Avatar seed", kind: "number", group: "Look", min: 0, hint: "The same seed always draws the same avatar." },
   { key: "HOO_AVATAR_SHAPE", label: "Avatar shape", kind: "select", group: "Look", choices: ["circle", "squircle"], hint: "Circle reads as a chat avatar; a rounded square as an app icon." },
+  { key: "HOO_AVATAR_STYLE", label: "Avatar style", kind: "select", group: "Look", choices: ["dots", "pet"], hint: "Dots is the plain tile; pet is a cartoonish face cropped into the shape." },
   { key: "HOO_AVATAR_PALETTE", label: "Avatar colour", kind: "select", group: "Look", choices: ["amber", "teal", "violet", "rose", "slate", "lime"], hint: "Empty picks one from the seed." },
 ];
 
@@ -292,6 +295,7 @@ export type Instance = {
   fields: Field[];
   avatarSeed: number;
   avatarShape: AvatarShape;
+  avatarStyle: AvatarStyle;
   avatarPalette: string;
   workdir: string;
 };
@@ -365,6 +369,7 @@ export function instanceFrom(name: string, env: Map<string, string>, dir?: strin
     fields: fieldsFor(surfaces),
     avatarSeed,
     avatarShape: shape === "squircle" ? "squircle" : "circle",
+    avatarStyle: env.get("HOO_AVATAR_STYLE")?.trim() === "pet" ? "pet" : "dots",
     avatarPalette: env.get("HOO_AVATAR_PALETTE")?.trim() ?? "",
     workdir: env.get("HOO_WORKDIR")?.trim() ?? "",
   };
