@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 process.env.DISCORD_TOKEN ??= "x";
 process.env.ALLOWED_USER_IDS ??= "1";
-const { choiceBlocks, slackFiles, slackSpaceId, stripMention, toMessageLike } = await import("../src/slack.ts");
+const { choiceBlocks, peerCall, slackFiles, slackSpaceId, stripMention, toMessageLike } = await import("../src/slack.ts");
 const { formatContext, idOrder, selectSince, toContext } = await import("../src/context.ts");
 
 test("a call is a message that mentions the bot; the mention is removed", () => {
@@ -14,6 +14,14 @@ test("a call is a message that mentions the bot; the mention is removed", () => 
 test("spaces: a channel, or a thread in it", () => {
   expect(slackSpaceId("C1")).toBe("C1");
   expect(slackSpaceId("C1", "1700000000.000100")).toBe("C1/1700000000.000100");
+});
+
+test("only confirmed bots are peers: a person in PEER_BOT_IDS stays a person", () => {
+  const bots = new Set(["UPEER"]);
+  expect(peerCall({ user: "UOWNER" }, bots)).toBe(false);
+  expect(peerCall({ user: "UOWNER", bot_id: "B1" }, bots)).toBe("ignore");
+  expect(peerCall({ user: "UPEER", bot_id: "B2" }, bots)).toBe(true);
+  expect(peerCall({ user: "UOTHER", bot_id: "B3" }, bots)).toBe("ignore");
 });
 
 test("Slack timestamps sort as message ids, across seconds and with Discord ids unchanged", () => {
