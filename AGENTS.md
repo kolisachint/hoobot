@@ -36,6 +36,34 @@ verifying against.
 - The `slack/` folder under the runtime dir holds Slack CLI projects, not
   bots, and is reserved. Instances live in `~/.hoobot/runtime/<name>/`.
 
+## Supervision is `scripts/supervise.sh`
+
+One launchd agent (`com.hoobot.supervisor`) holds the manager and every
+supervised bot in the background, checks health, restarts what stops
+answering, and keeps the Mac awake with `caffeinate -i`:
+
+```sh
+sh scripts/supervise.sh start   # agent + manager + every bot
+sh scripts/supervise.sh status  # what is running and healthy
+sh scripts/supervise.sh stop    # every bot down, agent unloaded
+```
+
+On this Mac it is also on the profile, so `hsv start` (or
+`hoobot-supervise status`) works from any directory — the function in
+`~/.config/zsh/.zshrc` calls the checkout, so the script is never stale.
+
+It defaults to `RUN_FROM_NPM=1` and `HOOBOT_RUNTIME_DIR=~/.hoobot/runtime`,
+so the same rule as above applies to a bot the supervisor restarts. Two
+things to know:
+
+- **A bot is supervised only if `~/.hoobot/runtime/<name>/supervised`
+  exists.** `start <name>` writes it, `stop <name>` removes it, so the
+  manager page's Stop button is not silently undone. Adding the marker by
+  hand is fine; deleting it is the way to leave a bot down.
+- **The script is the code, the plist is the machine.** Only
+  `~/Library/LaunchAgents/com.hoobot.supervisor.plist` and those markers are
+  machine-local — nothing about a Mac is committed.
+
 ## Skills ship in the package
 
 `skills/` is in the npm tarball, and `prepareWorkspace()` seeds it into
