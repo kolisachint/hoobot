@@ -158,6 +158,14 @@ test("the Slack half refuses to pretend it worked", () => {
   expect(app).toContain("app_mentions:read");
   // The confirmation whose default is "keep the app".
   expect(app).toContain("will not be deleted");
+  // Deployed, not local: a local install is a development app and Slack
+  // renames it "<name> (local)", so the bot answers to @hee_local forever.
+  expect(app).toContain('flag("environment") ?? "deployed"');
+  expect(app).not.toContain('"--environment", "local"');
+  // The two apps live in different files; reading the wrong one means
+  // changing an app you are not editing.
+  expect(app).toContain("apps.dev.json");
+  expect(app).toContain("apps.json");
   // The one call that returns both tokens in full.
   expect(app).toContain("apps.developerInstall");
   expect(app).toContain("api_access_tokens");
@@ -167,6 +175,32 @@ test("the Slack half refuses to pretend it worked", () => {
   // And a token that cannot open a websocket is a bot that looks healthy
   // until it is mentioned.
   expect(app).toContain("apps.connections.open");
+});
+
+test("peers are rewired from Slack, never from what the file claims", () => {
+  const peer = readFileSync(join(packagedSkillsDir(), "bot-slack", "scripts", "peer-sync.ts"), "utf8");
+
+  // Bot ids are not stable: every app recreation mints a new one. Reading
+  // the old id out of the .env and believing it is the whole failure.
+  expect(peer).toContain("auth.test");
+  expect(peer).toContain("PEER_BOT_IDS");
+  expect(peer).toContain("--dry-run");
+
+  // A bot that cannot authenticate must be reported, never wired in — the
+  // stale id it would otherwise get is quieter than no peers at all.
+  expect(peer).toContain("unreachable");
+
+  // Restart through the resolved path: a relative ../ breaks the moment this
+  // file is seeded into a work folder, where there is no checkout above it.
+  expect(peer).toContain("runtimeScript()");
+  expect(peer).toContain("paths.sh");
+  expect(peer).not.toMatch(/join\(import\.meta\.dir, "\.\.", "\.\."\)/);
+
+  // And the fallback has to work: runtime.sh is only reachable by resolving
+  // the hoobot symlink, since a guessed layout points at nothing.
+  const paths = readFileSync(join(packagedSkillsDir(), "bot-slack", "scripts", "paths.sh"), "utf8");
+  expect(paths).toContain("_package_dir");
+  expect(paths).not.toContain("share/hoobot/scripts/runtime.sh");
 });
 
 test("no skill sends the user to a browser for something we can do", () => {

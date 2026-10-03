@@ -124,6 +124,42 @@ So the only thing still asked of a person is *which* channel.
 | `token <bot>` | Just the bot user id, for `PEER_BOT_IDS` |
 | `id <bot>` | Just the App ID |
 | `delete <bot>` | Uninstall and delete the app (there is no undo) |
+| `peer-sync.ts` | Rewire every bot's `PEER_BOT_IDS` from Slack, and restart |
+
+## The name will get a `_local` on it
+
+Slack calls a development install `<name> (local)`, and its bot user
+`<name>_local`. It is not cosmetic: the bot is `@hee_local` in every
+mention, `users.info` disagrees with your manifest, and nothing you write in
+`display_information.name` changes it.
+
+It comes from installing into the `local` environment. `create` installs
+into **`deployed`** for exactly this reason, and costs nothing — hoobot runs
+the app itself, not Slack's runtime. `local` is only for developing against
+Slack's own runtime, via `slack run`.
+
+If a bot is already stuck with the suffix, its app has to be recreated: the
+name is fixed at install time and no edit will move it. Create the new app,
+fetch its tokens, and rewire the peers to the new bot id — see below.
+
+## Peers, and why they go stale
+
+A bot's Slack user id changes **every time its app is recreated**. A stale
+id is the quietest failure there is: no error, the bot stays connected, it
+simply never answers, and the reason is a `U0C…` in a file nobody opened.
+
+So never hand-write an id. Resolve them all from Slack:
+
+```sh
+bun "$S/peer-sync.ts" --dry-run   # show what would change
+bun "$S/peer-sync.ts"             # rewire and restart
+```
+
+Every bot goes in every other bot's list — a peer mesh, not a ring — and a
+bot that cannot authenticate is reported as unreachable rather than wired
+in, because pointing peers at a dead id is the exact failure this prevents.
+
+Both directions, always. One-way peers never answer each other.
 
 Useful flags: `--description`, `--long-description`, `--display-name`,
 `--background-color`, `--icon <png>`, `--runtime <dir>`.

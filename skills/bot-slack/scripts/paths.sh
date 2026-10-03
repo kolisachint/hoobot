@@ -35,6 +35,22 @@ _hoobot_path() {
   printf '%s' "$p"
 }
 
+# The installed package directory, found through the `hoobot` symlink:
+# …/bin/hoobot -> …/node_modules/@kolisachint/hoobot/src/cli.ts. Guessing a
+# layout is how this file ends up pointing at a script that isn't there.
+_package_dir() {
+  local bin resolved
+  bin="$(command -v hoobot 2>/dev/null)" || return 1
+  resolved="$(cd "$(dirname "$bin")" 2>/dev/null && pwd -P)/$(basename "$bin")"
+  if command -v realpath >/dev/null 2>&1; then
+    resolved="$(realpath "$resolved" 2>/dev/null || echo "$resolved")"
+  fi
+  case "$resolved" in
+    */src/cli.ts) dirname "$(dirname "$resolved")" ;;
+    *) echo "$resolved" ;;
+  esac
+}
+
 _resolve() {
   local key="$1" p
   if p="$(_hoobot_path "$key")" && [ -n "$p" ]; then
@@ -42,13 +58,13 @@ _resolve() {
     return 0
   fi
   case "$key" in
-    package) p="$(dirname "$(dirname "$(command -v hoobot 2>/dev/null || echo /nonexistent)")")" ;;
+    package) p="$(_package_dir)" ;;
     runtime) p="$HOO_RUNTIME" ;;
     workdir) p="${HOO_WORKDIR:-$HOO_WORKDIR_DEFAULT}" ;;
     skills) p="${HOO_WORKDIR:-$HOO_WORKDIR_DEFAULT}/.cortexcode/skills" ;;
     selftest) p="${HOO_WORKDIR:-$HOO_WORKDIR_DEFAULT}/.cortexcode/skills/bot-selftest/scripts/bot-selftest.sh" ;;
     avatar-png) p="${HOO_WORKDIR:-$HOO_WORKDIR_DEFAULT}/.cortexcode/skills/bot-avatar/scripts/avatar-png.ts" ;;
-    runtime-script) p="$HOO_RUNTIME/../../share/hoobot/scripts/runtime.sh" ;;
+    runtime-script) p="$(_package_dir)/scripts/runtime.sh" ;;
     manager) p="http://127.0.0.1:8790" ;;
     *) return 1 ;;
   esac

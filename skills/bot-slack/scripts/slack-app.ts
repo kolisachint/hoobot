@@ -12,16 +12,19 @@
  * ID.
  *
  *   slack-app.ts create hee --description "hoo's companion"   # app + install
+ *   slack-app.ts tokens hee                                  # fetch both, --write
  *   slack-app.ts sync   hee                                  # push manifest edits
  *   slack-app.ts verify hee                                  # what Slack has now
  *   slack-app.ts token  hee                                  # bot id for PEER_BOT_IDS
  *   slack-app.ts delete hee                                  # remove the app
  *
- * The one thing nobody can automate on a normal workspace: the bot token
- * and the app-level token. Slack only hands those out on the app's OAuth &
- * Permissions and Socket Mode pages, so `create` ends by saying exactly
- * which two strings to copy and where to paste them. Everything before and
- * after that is done here.
+ * Apps are installed into the **deployed** environment, not `local`, and
+ * that is not a preference. A local install is a development app, and Slack
+ * says so in the name it gives everybody else: the app becomes
+ * "<name> (local)" and its bot user `<name>_local`, so the bot is
+ * @hee_local in every mention and `users.info` never agrees with the
+ * manifest. The deployed environment gives the plain name and costs nothing
+ * here — hoobot runs the app itself, not Slack's runtime.
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -59,6 +62,15 @@ const runtime = flag("runtime")?.replace(/^~(?=\/|$)/, process.env.HOME ?? "~") 
 const projectDir = join(runtime, "slack", name ?? "");
 const ptyScript = join(import.meta.dir, "slack-pty.sh");
 
+/**
+ * Where the app is installed. `deployed` by default, because a `local` app
+ * is a development app and Slack marks it in the name it gives everybody
+ * else: the app becomes "<name> (local)" and the bot user `<name>_local`.
+ * Same app otherwise, and hoobot runs it itself either way. `local` is only
+ * for developing against Slack's own runtime.
+ */
+const environment = (): string => flag("environment") ?? "deployed";
+
 function runtimeDir(): string {
   try {
     const out = spawnSync("hoobot", ["path", "runtime"], { encoding: "utf8" });
@@ -94,10 +106,17 @@ function fail(message: string): never {
 
 /** What the CLI recorded about the installed app. */
 function appRecord(): { appId: string; teamId: string } | null {
-  const path = join(projectDir, ".slack", "apps.dev.json");
+  // The CLI keeps one file per environment: apps.json for deployed, and
+  // apps.dev.json for local. A project that installed both has both, and
+  // reading the wrong one means talking to an app you are not changing.
+  const dev = environment() === "local";
+  const path = join(projectDir, ".slack", dev ? "apps.dev.json" : "apps.json");
   if (!existsSync(path)) return null;
   try {
-    const map = JSON.parse(readFileSync(path, "utf8")) as Record<string, { app_id?: string; team_id?: string }>;
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as
+      | { apps?: Record<string, { app_id?: string; team_id?: string }> }
+      | Record<string, { app_id?: string; team_id?: string }>;
+    const map = "apps" in parsed ? parsed.apps ?? {} : parsed;
     const first = Object.values(map)[0];
     return first?.app_id ? { appId: first.app_id, teamId: first.team_id ?? "" } : null;
   } catch {
@@ -182,7 +201,7 @@ if (command === "create") {
     writeFileSync(join(projectDir, "assets", "icon.png"), readFileSync(icon));
   }
 
-  const out = plain(slack(["app", "install", "--environment", "local"], { interactive: true }));
+  const out = plain(slack(["app", "install", "--environment", environment()], { interactive: true }));
   const record = appRecord();
   if (!record) fail(`the app was not created. Slack said:\n${out.trim()}`);
 

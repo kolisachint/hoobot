@@ -80,9 +80,9 @@ after the tokens are written; they would be minted for nothing.
 - Restart the bot (manager Restart, or `runtime.sh restart <name>`).
 - `/invite @<name>` in a channel. Without it the bot sees nothing, and
   `channels:join` is what lets it follow itself in.
-- Companions only: on **both** bots set `PEER_BOT_IDS` to the *other* bot's
-  id, which `slack-app.ts token <name>` prints. One direction is not a
-  companion.
+- Companions only: `peer-sync.ts` does this for every bot at once, and it
+  resolves each id from Slack rather than trusting the file — a bot id
+  changes whenever its app is recreated. Run it after any `create`.
 - Restart both.
 
 ## 5. Prove it answers
