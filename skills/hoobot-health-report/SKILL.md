@@ -11,14 +11,18 @@ knows what needs **them**, because most of it only they can do.
 ## Run
 
 ```sh
-bash "$(hoobot path selftest)" <name> [<name>…]
+# HOO_PATHS resolves a path on this machine and this version. Define it
+# once, then read a path with: HOO_PATHS selftest
+HOO_PATHS() { bash "${HOO_SKILLS:-${HOO_WORKDIR:-$HOME/.hoobot/runtime/shared/workspace}/.cortexcode/skills}"/bot-slack/scripts/paths.sh "$@"; }
+
+bash "$(HOO_PATHS selftest)" <name> [<name>…]
 ```
 
 That is the whole diagnosis. Add, only if a check was inconclusive:
 
 ```sh
 curl -s http://127.0.0.1:8790/api/manager | python3 -m json.tool | head -40   # what the manager knows
-tail -30 "$(hoobot path runtime)/<name>/<name>.log"                                 # what it said at startup
+tail -30 "$(HOO_PATHS runtime)/<name>/<name>.log"                                 # what it said at startup
 ```
 
 ## What the user must do vs what we can do

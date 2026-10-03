@@ -34,19 +34,23 @@ Run these in order. Each step's output is the next step's input, and the
 last one is the only place you stop and ask.
 
 ```sh
-S="$(hoobot path skills)/bot-slack/scripts"
+# HOO_PATHS resolves a path on this machine and this version. Define it
+# once, then read a path with: HOO_PATHS skills
+HOO_PATHS() { bash "${HOO_SKILLS:-${HOO_WORKDIR:-$HOME/.hoobot/runtime/shared/workspace}/.cortexcode/skills}"/bot-slack/scripts/paths.sh "$@"; }
+
+S="$(HOO_PATHS skills)/bot-slack/scripts"
 
 # 1. Slack: create the app from the manifest, install it, upload the icon
 bun "$S/slack-app.ts" create hee --description "hoo's companion" --icon /tmp/hee.png
 
 # 2. hoobot manager: put the details and the tokens into the bot's .env
-#    (the manager API, or its page at $(hoobot path manager))
+#    (the manager API, or its page at $(HOO_PATHS manager))
 
 # 3. Slack: prove the app is really there and really installed
 bun "$S/slack-app.ts" verify hee
 
 # 4. start the bot and prove it answers
-bash "$(hoobot path selftest)" hee
+bash "$(HOO_PATHS selftest)" hee
 ```
 
 Step 1 prints:
@@ -92,11 +96,11 @@ Where things live:
 
 | Thing | Path |
 |---|---|
-| The Slack CLI project | `$(hoobot path runtime)/slack/<bot>/` |
+| The Slack CLI project | `$(HOO_PATHS runtime)/slack/<bot>/` |
 | App id, team id | `…/slack/<bot>/.slack/apps.dev.json` |
 | The manifest Slack is given | `…/slack/<bot>/manifest.json` |
 | The uploaded icon | `…/slack/<bot>/assets/icon.png` |
-| These scripts | `$(hoobot path skills)/bot-slack/scripts/` |
+| These scripts | `$(HOO_PATHS skills)/bot-slack/scripts/` |
 
 `slack/` is a reserved folder in the runtime dir, so the manager never
 mistakes a Slack project for a bot.
@@ -123,7 +127,10 @@ nothing.
 Edit, then push, then check — in that order, and never skip the check:
 
 ```sh
-$EDITOR "$(hoobot path runtime)/slack/hee/manifest.json"
+# HOO_PATHS() { bash "${HOO_SKILLS:-${HOO_WORKDIR:-$HOME/.hoobot/runtime/shared/workspace}/.cortexcode/skills}"/bot-slack/scripts/paths.sh "$@"; }
+S="$(HOO_PATHS skills)/bot-slack/scripts"
+
+$EDITOR "$(HOO_PATHS runtime)/slack/hee/manifest.json"
 bun "$S/slack-app.ts" sync hee --icon /tmp/hee.png
 bun "$S/slack-app.ts" verify hee
 ```

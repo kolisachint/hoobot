@@ -11,13 +11,19 @@ message to a bot that has explicitly allowed it.
 
 ## Where things live
 
+```sh
+# HOO_PATHS resolves a path on this machine and this version. Define it
+# once, then read a path with: HOO_PATHS runtime
+HOO_PATHS() { bash "${HOO_SKILLS:-${HOO_WORKDIR:-$HOME/.hoobot/runtime/shared/workspace}/.cortexcode/skills}"/bot-slack/scripts/paths.sh "$@"; }
+```
+
 | Thing | Path |
 |---|---|
-| Runtime folder (the manager reads this) | `$(hoobot path runtime)/<name>/` |
-| The `.env` — **this is the state** | `$(hoobot path runtime)/<name>/.env` |
-| Shared working folder (both bots see these files) | `$(hoobot path workdir)` |
+| Runtime folder (the manager reads this) | `$(HOO_PATHS runtime)/<name>/` |
+| The `.env` — **this is the state** | `$(HOO_PATHS runtime)/<name>/.env` |
+| Shared working folder (both bots see these files) | `$(HOO_PATHS workdir)` |
 | Per-bot conversation links (never share these) | `~/.local/share/hoobot/<name>-links.json` |
-| Manager page | `hoobot manager` → `$(hoobot path manager)` |
+| Manager page | `hoobot manager` → `$(HOO_PATHS manager)` |
 
 A bot in `a hoobot checkout/runtime/` is **invisible to the manager** — that
 folder is the checkout's scratch dir. If the manager can't see a bot that
@@ -31,7 +37,7 @@ exists, it lives in the wrong folder. That is the first thing to check.
 2. **Slack app.** `slack-bot-create` runs `bot-slack`, which creates and
    installs the app and uploads the icon without a browser. Only the two
    token strings need the user.
-3. **Runtime folder + `.env`.** Copy `$(hoobot path runtime)/hoo/.env` as the
+3. **Runtime folder + `.env`.** Copy `$(HOO_PATHS runtime)/hoo/.env` as the
    template, then set `HEALTH_PORT` to the next free one (8788, 8789…),
    `HOO_INSTANCE=<name>`, `LINKS_FILE` to its own file, and give it its own
    `HOO_AVATAR_SEED`. Leave `PEER_BOT_IDS` for step 5.
@@ -43,7 +49,7 @@ exists, it lives in the wrong folder. That is the first thing to check.
 6. **Verify** — `scripts/bot-selftest.sh <name>` from this skill's folder.
    It is the gate; do not report success without it passing.
 7. **Restart** with the manager (`hoobot manager`, Restart) or
-   `HOOBOT_RUNTIME_DIR=$(hoobot path runtime) sh "$(hoobot path runtime-script)" restart <name>`.
+   `HOOBOT_RUNTIME_DIR=$(HOO_PATHS runtime) sh "$(HOO_PATHS runtime-script)" restart <name>`.
 
 ## Repair checklist
 

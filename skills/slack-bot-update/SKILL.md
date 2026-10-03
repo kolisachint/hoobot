@@ -31,7 +31,13 @@ Never tell a user a change is live before the restart.
 
 ## Edit
 
-`$(hoobot path runtime)/<name>/.env`. Keys in use:
+```sh
+# HOO_PATHS resolves a path on this machine and this version. Define it
+# once, then read a path with: HOO_PATHS runtime
+HOO_PATHS() { bash "${HOO_SKILLS:-${HOO_WORKDIR:-$HOME/.hoobot/runtime/shared/workspace}/.cortexcode/skills}"/bot-slack/scripts/paths.sh "$@"; }
+```
+
+`$(HOO_PATHS runtime)/<name>/.env`. Keys in use:
 
 | Key | Note |
 |---|---|
@@ -53,7 +59,7 @@ Prefer a targeted `sed` on one key over rewriting the file, so a hand-tuned
 note never disappears:
 
 ```sh
-env="$(hoobot path runtime)/hoo/.env"
+env="$(HOO_PATHS runtime)/hoo/.env"
 cp "$env" "$env.bak.$(date +%Y%m%d-%H%M%S)"
 python3 - "$env" <<'EOF'
 import sys
@@ -72,7 +78,7 @@ From the manager (`hoobot manager`, then Restart) or:
 
 ```sh
 HOOBOT_RUNTIME_DIR="$HOME/.hoobot/runtime" RUN_FROM_NPM=1 \
-  sh "$(hoobot path runtime-script)" restart <name>
+  sh "$(HOO_PATHS runtime-script)" restart <name>
 ```
 
 **`RUN_FROM_NPM=1` is not optional for a normal update.** Without it the bot
@@ -83,7 +89,7 @@ which is the only thing worth verifying against.
 Confirm what actually ran:
 
 ```sh
-ps -p "$(cat "$(hoobot path runtime)/<name>/<name>.pid")" -o command=
+ps -p "$(cat "$(HOO_PATHS runtime)/<name>/<name>.pid")" -o command=
 ```
 
 It must name `node_modules/@kolisachint/hoobot/src/index.ts`. If it names
@@ -92,16 +98,16 @@ It must name `node_modules/@kolisachint/hoobot/src/index.ts`. If it names
 ## Verify
 
 ```sh
-bash "$(hoobot path selftest)" <name>
+bash "$(HOO_PATHS selftest)" <name>
 curl -s http://127.0.0.1:<port>/healthz
-tail -20 "$(hoobot path runtime)/<name>/<name>.log"
+tail -20 "$(HOO_PATHS runtime)/<name>/<name>.log"
 ```
 
 If the change touched the Slack app, verify that end too — the selftest
 reads the token, not the app's settings:
 
 ```sh
-bun "$(hoobot path skills)/bot-slack/scripts/slack-app.ts" verify <name>
+bun "$(HOO_PATHS skills)/bot-slack/scripts/slack-app.ts" verify <name>
 ```
 
 The log's startup lines matter: `Slack: peer bots @x, @y (2 turns per

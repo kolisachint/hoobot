@@ -21,10 +21,14 @@ Do not re-derive any of it.
 ## 1. Slack: create and install the app
 
 ```sh
-S="$(hoobot path skills)/bot-slack/scripts"
+# HOO_PATHS resolves a path on this machine and this version. Define it
+# once, then read a path with: HOO_PATHS selftest
+HOO_PATHS() { bash "${HOO_SKILLS:-${HOO_WORKDIR:-$HOME/.hoobot/runtime/shared/workspace}/.cortexcode/skills}"/bot-slack/scripts/paths.sh "$@"; }
+
+S="$(HOO_PATHS skills)/bot-slack/scripts"
 
 # the face comes first, so it can go up with the app
-bun "$(hoobot path avatar-png)" --name hee --style pet --shape squircle \
+bun "$(HOO_PATHS avatar-png)" --name hee --style pet --shape squircle \
   --palette rose --size 512 --out /tmp/hee.png
 
 bun "$S/slack-app.ts" create hee \
@@ -93,7 +97,7 @@ start without one.
 ## 6. Prove it answers
 
 ```sh
-bash "$(hoobot path selftest)" <name>
+bash "$(HOO_PATHS selftest)" <name>
 ```
 
 Then, in Slack: `/invite @<name>`, mention it, and **wait for the reply**.

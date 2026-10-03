@@ -8,7 +8,11 @@ description: Run the end-to-end check on a hoobot instance and fix what it finds
 One command, exit 0 = healthy:
 
 ```sh
-bash "$(hoobot path selftest)" hoo hee
+# HOO_PATHS resolves a path on this machine and this version. Define it
+# once, then read a path with: HOO_PATHS selftest
+HOO_PATHS() { bash "${HOO_SKILLS:-${HOO_WORKDIR:-$HOME/.hoobot/runtime/shared/workspace}/.cortexcode/skills}"/bot-slack/scripts/paths.sh "$@"; }
+
+bash "$(HOO_PATHS selftest)" hoo hee
 ```
 
 With no arguments it checks `$HOO_INSTANCE`. **This is the gate.** Do not
@@ -40,7 +44,7 @@ installed, has the scopes you think, or is wearing the right icon. When the
 change touched the Slack app, check that end as well:
 
 ```sh
-bun "$(hoobot path skills)/bot-slack/scripts/slack-app.ts" verify <name>
+bun "$(HOO_PATHS skills)/bot-slack/scripts/slack-app.ts" verify <name>
 ```
 
 And a passing selftest is not a conversation. The real gate is the bot
@@ -50,7 +54,7 @@ answering a mention in Slack.
 
 | Output | Meaning | Fix |
 |---|---|---|
-| `no .env at …` | wrong folder | move it under `$(hoobot path runtime)/<name>/` |
+| `no .env at …` | wrong folder | move it under `$(HOO_PATHS runtime)/<name>/` |
 | `Slack token dead: account_inactive` | app uninstalled or token reset | `bot-slack`: `sync` to reinstall, then the user re-copies both tokens |
 | `is a person, not a bot` | a human ID in `PEER_BOT_IDS` | remove it |
 | `users.info not ok` | the bot's own token is dead, so nothing can be verified | fix the token first |

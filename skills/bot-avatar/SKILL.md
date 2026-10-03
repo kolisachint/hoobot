@@ -25,13 +25,17 @@ They are not random: a random hue is usually ugly.
 SVG (what the manager serves, and what the chat shows):
 
 ```sh
+# HOO_PATHS resolves a path on this machine and this version. Define it
+# once, then read a path with: HOO_PATHS selftest
+HOO_PATHS() { bash "${HOO_SKILLS:-${HOO_WORKDIR:-$HOME/.hoobot/runtime/shared/workspace}/.cortexcode/skills}"/bot-slack/scripts/paths.sh "$@"; }
+
 curl "http://127.0.0.1:8790/api/avatar.svg?seed=4242&style=pet&shape=squircle&palette=rose"
 ```
 
 PNG (what Slack's uploader wants):
 
 ```sh
-bun "$(hoobot path avatar-png)" --name hee --style pet --shape squircle \
+bun "$(HOO_PATHS avatar-png)" --name hee --style pet --shape squircle \
   --palette rose --size 512 --out ~/Desktop/hee.png
 ```
 
@@ -42,7 +46,7 @@ point at a checkout.
 
 ## Change a bot's saved face
 
-Set the keys in `$(hoobot path runtime)/<name>/.env`, then restart the bot's
+Set the keys in `$(HOO_PATHS runtime)/<name>/.env`, then restart the bot's
 config by saving in the manager (the Look group has Avatar seed / shape /
 style / colour):
 
@@ -62,10 +66,10 @@ Change it deliberately, and say which bot changed.
 — there is no need for the user to open App Home and click through a form:
 
 ```sh
-bun "$(hoobot path avatar-png)" --name hee --style pet --shape squircle \
+bun "$(HOO_PATHS avatar-png)" --name hee --style pet --shape squircle \
   --palette rose --size 512 --out /tmp/hee.png
-bun "$(hoobot path skills)/bot-slack/scripts/slack-app.ts" sync hee --icon /tmp/hee.png
-bun "$(hoobot path skills)/bot-slack/scripts/slack-app.ts" verify hee
+bun "$(HOO_PATHS skills)/bot-slack/scripts/slack-app.ts" sync hee --icon /tmp/hee.png
+bun "$(HOO_PATHS skills)/bot-slack/scripts/slack-app.ts" verify hee
 ```
 
 `sync` writes `assets/icon.png` into the Slack project and pushes it; Slack

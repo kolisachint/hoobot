@@ -164,6 +164,38 @@ test("the Slack half refuses to pretend it worked", () => {
   expect(app).toContain("xapp-");
 });
 
+test("a skill resolves paths without needing the hoobot that ships it", () => {
+  // The trap this exists for: `hoobot path` arrives in the same release as
+  // the skills, but a workspace can hold new skills against an older build,
+  // and on that build `hoobot path` is an unknown subcommand that falls
+  // through to starting the bot — prints nothing to stdout, exits 0. So
+  //
+  //   bash "$(hoobot path selftest)" hoo     # -> bash: : No such file
+  //
+  // with the real error scrolled off above it: a broken path wearing the
+  // costume of a missing file. So skills go through paths.sh, which falls
+  // back to the documented layout, and defines it before using it.
+  const dir = join(packagedSkillsDir(), "bot-slack", "scripts", "paths.sh");
+  expect(existsSync(dir)).toBe(true);
+  const helper = readFileSync(dir, "utf8");
+  // An empty answer is the failure mode, so never allow one.
+  expect(helper).toContain("[ -n \"$p\" ] || return 1");
+  expect(helper).toContain("no path for");
+
+  for (const name of skillNames()) {
+    const text = readFileSync(join(packagedSkillsDir(), name, "SKILL.md"), "utf8");
+    // Nothing may call the subcommand the old build lacks.
+    expect(text, name).not.toMatch(/\$\(hoobot path /);
+    const uses = (text.match(/\$\(HOO_PATHS /g) ?? []).length;
+    if (uses) {
+      expect(text, name).toContain("HOO_PATHS() {");
+      // The definition has to come before the first use, or the first
+      // command in the skill runs before the shell knows the name.
+      expect(text.indexOf("HOO_PATHS() {"), name).toBeLessThan(text.indexOf("$(HOO_PATHS "));
+    }
+  }
+});
+
 test("hoobot path answers for every key it advertises", () => {
   const paths = hoobotPaths();
   for (const key of ["package", "runtime", "workdir", "skills", "selftest", "avatar-png", "runtime-script", "manager"]) {
