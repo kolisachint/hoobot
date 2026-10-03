@@ -237,9 +237,9 @@ export const FIELDS: Field[] = [
   { key: "WORKSPACES", label: "Per-channel folders", kind: "list", group: "Workspace", hint: "channel-id=folder, comma-separated. Not with a shared app-server." },
   { key: "APP_SERVER", label: "App-server", kind: "text", group: "Workspace", hint: "Empty = start hoocode's own. Or a unix socket / stdio command.", placeholder: "stdio:hoocode app-server" },
   { key: "HOOCODE_BIN", label: "hoocode command", kind: "text", group: "Workspace", hint: "Used when no app-server is given.", placeholder: "hoocode" },
-  { key: "HOOCODE_ARGS", label: "Extra flags", kind: "text", group: "Workspace", hint: "Passed to the app-server only." },
+  { key: "HOOCODE_ARGS", label: "Extra flags", kind: "text", group: "Workspace", hint: "Passed to the app-server only.", placeholder: "--thinking high" },
 
-  { key: "MODEL", label: "Model", kind: "text", group: "Model", hint: "Leave empty for the default. Also settable per thread with !model.", placeholder: "anthropic/claude-sonnet-4-5" },
+  { key: "MODEL", label: "Model", kind: "text", group: "Model", hint: "Leave empty and the bot takes whatever hoocode defaults to — a subscription that can lapse, leaving it busy on a call that never answers. Also settable per thread with !model.", placeholder: "opencode-go/space-bunny-free" },
   { key: "LINKS_FILE", label: "Conversation file", kind: "text", group: "Model", hint: "Keeps chat threads matched to app-server threads. One per bot." },
   { key: "DEBUG", label: "Print app-server errors", kind: "toggle", group: "Model", hint: "Noisier logs; useful when a tool call misbehaves." },
 
