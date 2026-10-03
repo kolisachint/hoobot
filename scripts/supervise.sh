@@ -280,9 +280,20 @@ is_loaded() { launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; }
 
 load_agent() {
   write_plist
-  is_loaded && launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
-  launchctl bootstrap "$DOMAIN" "$PLIST"
-  is_loaded || die "launchd refused $PLIST"
+  if is_loaded; then
+    launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
+    # bootout only *signals* the job: launchd keeps the label registered for
+    # a moment afterwards, and bootstrapping into that window fails with
+    # "Bootstrap failed: 5: Input/output error". Wait for the label to go.
+    i=0
+    while is_loaded && [ "$i" -lt 50 ]; do i=$((i + 1)); sleep 0.2; done
+    is_loaded && die "$LABEL is still loaded; try: launchctl bootout $DOMAIN/$LABEL"
+  fi
+  # Same EIO can come from launchd still settling, so one retry is cheap.
+  launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null ||
+    launchctl bootstrap "$DOMAIN" "$PLIST" ||
+    die "launchd refused $PLIST"
+  is_loaded || die "launchd accepted $PLIST but did not load $LABEL"
 }
 
 # A manager started by hand (a terminal, a previous session) would hold the
