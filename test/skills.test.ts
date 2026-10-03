@@ -21,6 +21,11 @@ function walk(dir: string): string[] {
   });
 }
 
+/** Files under a skill folder, relative to it. */
+function skillFiles(skillDir: string): string[] {
+  return walk(skillDir).map((f) => relative(skillDir, f).split(sep).join("/"));
+}
+
 let work: string;
 let source: string;
 
@@ -305,6 +310,33 @@ test("the package ships everything the skills need at runtime", () => {
   expect(existsSync(join(packagedSkillsDir(), "bot-slack", "scripts", "paths.sh"))).toBe(true);
   expect(existsSync(join(packagedSkillsDir(), "bot-slack", "scripts", "peer-sync.ts"))).toBe(true);
   expect(existsSync(join(packageRootForTest(), "scripts", "runtime.sh"))).toBe(true);
+});
+
+test("no skill reaches outside the skills it ship in", () => {
+  // Caught by CI on a Linux runner, after passing on the author's machine:
+  // a type written as `typeof import("../../../../../github/hoobot/src/…")`
+  // walks up out of skills/ and lands in one person's checkout. It resolves
+  // there, and on nobody else's — including the tarball.
+  //
+  // The rule is "stays under skills/", not "stays under the repo": a repo
+  // prefix passes on the author's machine, which is exactly why this got
+  // through. A skill is a standalone script that may run against an older
+  // hoobot than the one it was written beside, so it imports nothing from
+  // package internals at all.
+  const skillsRoot = packagedSkillsDir();
+  for (const name of skillNames()) {
+    const skillDir = join(skillsRoot, name);
+    for (const file of skillFiles(skillDir)) {
+      if (!/\.(ts|js|mts)$/.test(file)) continue;
+      const text = readFileSync(join(skillDir, file), "utf8");
+      for (const m of text.matchAll(/from\s+"([^"]+)"|import\("([^"]+)"\)/g)) {
+        const spec = m[1] ?? m[2] ?? "";
+        if (!spec.startsWith(".")) continue; // a bare specifier is fine
+        const abs = resolve(skillDir, file, "..", spec);
+        expect(abs.startsWith(skillsRoot + sep), `${name}/${file} imports ${spec}`.replace(skillsRoot, "skills")).toBe(true);
+      }
+    }
+  }
 });
 
 test("hoobot path answers for every key it advertises", () => {

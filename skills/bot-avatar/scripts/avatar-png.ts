@@ -14,11 +14,28 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 /**
+ * The bit of hoobot's avatar module this script uses.
+ *
+ * Declared here rather than imported. The script deliberately works against
+ * *whichever* hoobot is installed, including one too old to know `--style`,
+ * so it cannot import that module at compile time — and writing the type as
+ * `typeof import("../../…/src/avatar.ts")` hard-codes one machine's
+ * checkout into a file that ships to everyone, where the path resolves for
+ * the author and for nobody else.
+ */
+type AvatarModule = {
+  avatarSvg: (seed: number, opts?: { style?: string; shape?: string; palette?: string; name?: string }) => string;
+  hashSeed: (text: string) => number;
+  /** Keyed by palette name, so it is looked up and listed, not iterated. */
+  PALETTES: Record<string, unknown>;
+};
+
+/**
  * Find hoobot's `avatar.ts`. The published package is the source of truth
  * (see hoobot's AGENTS.md: only the npm build is what runs), so look there
  * first and fall back to a checkout for development.
  */
-async function avatarModule(): Promise<typeof import("../../../../../github/hoobot/src/avatar.ts")> {
+async function avatarModule(): Promise<AvatarModule> {
   const candidates = [
     process.env.HOOBOT_SRC,
     join(homedir(), ".local/share/bun/install/global/node_modules/@kolisachint/hoobot/src/avatar.ts"),
