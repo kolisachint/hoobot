@@ -168,6 +168,40 @@ from the chat. `RUN_FROM_NPM=1 scripts/runtime.sh start hoo` runs the
 published build instead. `scripts/service.sh` (launchd, above) is the other
 way to keep one instance alive at login; use one supervisor per instance.
 
+## Running in the background (supervisor)
+
+One command for the manager *and* every bot, kept up in the background:
+
+```sh
+scripts/supervise.sh start      # agent installed, manager up, every bot up
+scripts/supervise.sh status     # what is running and whether it is healthy
+scripts/supervise.sh stop       # every bot down and the agent unloaded
+scripts/supervise.sh restart    # the manager and every supervised bot
+scripts/supervise.sh logs       # the supervisor's own log
+scripts/supervise.sh uninstall  # stop everything and remove the agent
+```
+
+`start` writes a launchd agent (`~/Library/LaunchAgents/com.hoobot.supervisor.plist`)
+that comes up at login and holds the Mac awake with `caffeinate -i` for as
+long as it runs. Every 30 seconds it checks the manager's `/api/manager` and
+each bot's own `/healthz`, and restarts what is not answering — a crashed bot
+and a silently wedged one are the same problem to a chat. The script lives in
+the repo and ships with the package; only the generated plist and one
+`supervised` marker per bot are machine-local.
+
+On a laptop, the shell profile usually gets you a shorter name — this machine
+has `hoobot-supervise start` (aliased `hsv`, with completion) in
+`~/.config/zsh/.zshrc`, calling this script by its path in the checkout.
+
+The marker is the point: the manager page has a Stop button, and a supervisor
+that restarted everything would quietly undo it. `start <name>` writes the
+marker and `stop <name>` removes it, so a bot you stopped from the browser
+stays stopped. Knobs, all optional: `HOOBOT_INTERVAL` (check every N seconds,
+default 30), `HOOBOT_FAILS` (unhealthy checks before a restart, default 2),
+`HOOBOT_COOLDOWN` (seconds between attempts at one bot, default 120),
+`MANAGER_PORT`, `HOOBOT_RUNTIME_DIR`, and `RUN_FROM_NPM` (default 1, so the
+published build is what answers in Slack).
+
 ## The bot manager (UI)
 
 ```sh
