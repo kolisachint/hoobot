@@ -174,9 +174,13 @@ export class ThreadSession {
       const params: Record<string, unknown> = { threadId: this.threadId, input };
       // Sent every turn: the server ignores it when it's already the model,
       // and it survives a bot restart or a server that forgot it.
-      if (this.chosenModel) params.model = this.chosenModel;
+      // `config.model` counts too: MODEL is the bot's default, and a thread
+      // resumed from an older link keeps the model it was started with, so
+      // without this a changed MODEL would only reach new threads.
+      const want = this.chosenModel ?? config.model;
+      if (want) params.model = want;
       const res = await this.client.request("turn/start", params);
-      if (this.chosenModel) this.model = this.chosenModel;
+      if (want) this.model = want;
       this.beginTurn(res.turn.id);
       this.caller = caller ?? null;
       return true;

@@ -77,6 +77,17 @@ export function stripMention(text: string, botUserId: string): string | null {
   return text.replace(re, "").trim();
 }
 
+/**
+ * Is this message from a peer bot? `botIds` holds PEER_BOT_IDS that Slack
+ * confirmed are bots, so a person listed there by mistake stays a person.
+ * Bots that aren't peers are ignored (`true` = drop).
+ */
+export function peerCall(event: { user?: string; bot_id?: string }, botIds: Set<string>): boolean | "ignore" {
+  const peer = !!event.user && botIds.has(event.user);
+  if (!!event.bot_id && !peer) return "ignore";
+  return peer;
+}
+
 type Pending = { allowed: (userId: string) => boolean; resolve: (p: Picked) => void; choices: Choice[] };
 
 export class Slack {
@@ -92,6 +103,13 @@ export class Slack {
   private nonce = 0;
   /** Peer bots by lowercase name → user id, so `@name` in an answer becomes a mention. */
   private peers = new Map<string, string>();
+  /**
+   * PEER_BOT_IDS that Slack confirms are bots. A person listed there by
+   * mistake must stay a person: a peer may not run `!` commands and spends
+   * the peer turn budget, so treating an owner as a peer makes their
+   * commands vanish.
+   */
+  private peerBotIds = new Set<string>();
   /** Answers to peer bots per thread (see src/peers.ts). */
   private budget = new TurnBudget(config.peerTurns);
   /** Spaces where "allow more turns?" is already asked. */
@@ -118,10 +136,18 @@ export class Slack {
     for (const id of config.peerBotIds) {
       if (id === this.botUserId) continue;
       const info: any = await this.web.users.info({ user: id }).catch(() => null);
-      for (const n of [info?.user?.name, info?.user?.profile?.display_name, info?.user?.real_name]) {
+      if (!info) {
+        console.error(`PEER_BOT_IDS: can't look up ${id}`);
+        continue;
+      }
+      if (!info.user?.is_bot) {
+        console.error(`PEER_BOT_IDS: ${id} is ${info.user?.name ?? "not a bot"}, not a bot; ignoring it as a peer.`);
+        continue;
+      }
+      this.peerBotIds.add(id);
+      for (const n of [info.user.name, info.user.profile?.display_name, info.user.real_name]) {
         if (n && /^[\w.-]+$/.test(n)) this.peers.set(String(n).toLowerCase(), id);
       }
-      if (!info) console.error(`PEER_BOT_IDS: can't look up ${id}`);
     }
     this.socket.on("message", (e: any) => this.onEvent(e));
     this.socket.on("interactive", (e: any) => this.onInteractive(e));
@@ -162,9 +188,12 @@ export class Slack {
 
   private async onMessage(event: any) {
     if (!event || !event.user || event.user === this.botUserId) return;
-    // Bots are ignored, except peers (PEER_BOT_IDS).
-    const peer = !!event.bot_id || config.peerBotIds.has(event.user);
-    if (peer && !config.peerBotIds.has(event.user)) return;
+    // Bots are ignored, except confirmed peers (PEER_BOT_IDS). `peerBotIds`
+    // holds only ids Slack says are bots, so a person in PEER_BOT_IDS is
+    // still a person here.
+    const from = peerCall(event, this.peerBotIds);
+    if (from === "ignore") return;
+    const peer = from;
     if (!USER_SUBTYPES.has(event.subtype)) return;
     // Channels and private channels only, like Discord's text channels.
     if (event.channel_type !== "channel" && event.channel_type !== "group") return;

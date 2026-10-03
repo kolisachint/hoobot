@@ -6,6 +6,7 @@ process.env.DISCORD_TOKEN ??= "x";
 process.env.ALLOWED_USER_IDS ??= "1";
 const { ThreadSession } = await import("../src/session.ts");
 const { LinkStore } = await import("../src/links.ts");
+const { config } = await import("../src/config.ts");
 
 class FakeServer extends EventEmitter {
   endpoint = "fake";
@@ -151,6 +152,29 @@ test("!model <part> picks a scoped or hidden model, sent on every turn and kept 
   const turns = server.calls.filter((c) => c.method === "turn/start");
   expect(turns.map((c) => c.params.model)).toEqual(["go/kimi-k3", "go/kimi-k3"]);
   expect(server.calls.filter((c) => c.method === "thread/start")).toHaveLength(1); // same conversation
+});
+
+test("MODEL reaches threads resumed from an older link; !model still wins", async () => {
+  const was = config.model;
+  config.model = "go/free-model";
+  try {
+    const server = new FakeServer();
+    // A link from before MODEL was set: no model saved, server says "old-model".
+    const links = new LinkStore(linksPath("env"));
+    links.set("slack:C1", { threadId: "t-old" });
+    const s = new ThreadSession(fakeThread(), server as any, links, () => {});
+    await s.prompt("hi");
+    expect(server.calls.find((c) => c.method === "turn/start")?.params.model).toBe("go/free-model");
+    s.close();
+    // An explicit pick in this thread outranks MODEL.
+    const s2 = new ThreadSession(fakeThread(), server as any, new LinkStore(linksPath("env2")), () => {});
+    await s2.chooseModel("opus");
+    await s2.prompt("hi");
+    expect(server.calls.filter((c) => c.method === "turn/start").at(-1)?.params.model).toBe("a/opus-5");
+    s2.close();
+  } finally {
+    config.model = was;
+  }
 });
 
 test("!model shows only scoped models; a pick applies from the next message", async () => {
