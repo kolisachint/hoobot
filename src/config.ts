@@ -32,6 +32,14 @@ export const config = {
   peerBotIds: new Set(list("PEER_BOT_IDS")),
   /** Answers a peer bot gets per thread before an allowed user is asked for more. */
   peerTurns: Math.max(1, Number(process.env.PEER_TURNS ?? 2) || 2),
+  /**
+   * Slack only: after a dropped socket, look this far back for mentions of
+   * the bot that never arrived, and answer them (0 = off). Socket Mode is a
+   * live connection, so anything in the gap is lost for good without this.
+   */
+  catchUpMinutes: Number(process.env.CATCHUP_MINUTES ?? 1440) || 0,
+  /** Most mentions one catch-up replays, so a long gap can't stampede the bot. */
+  catchUpMax: Math.max(1, Number(process.env.CATCHUP_MAX ?? 20) || 20),
   /** Optional: restrict to one Discord server / some channels (Discord or Slack channel IDs). */
   guildId: process.env.GUILD_ID?.trim() || undefined,
   channelIds: new Set(list("CHANNEL_IDS")),

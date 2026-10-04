@@ -115,6 +115,14 @@ Slack-only bot.
 `CHANNEL_IDS` and `WORKSPACES` take Slack channel IDs too (channel details
 → bottom of the **About** tab, e.g. `C0123ABCD`).
 
+Socket Mode is a live websocket, not a queue: when it drops, Slack does not
+replay the events said in the gap, and a mention in that gap is simply gone.
+So after every reconnect the bot asks Slack what was said after the last event
+it handled and answers the mentions it missed — in thread, oldest first, once
+each. `CATCHUP_MINUTES` (default 1440) bounds how far back it looks,
+`CATCHUP_MAX` (default 20) the most it replays at once; `CATCHUP_MINUTES=0`
+turns it off.
+
 ## Run in the background (macOS)
 
 Runs at login and restarts itself if it crashes.
