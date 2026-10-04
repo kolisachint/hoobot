@@ -41,6 +41,39 @@ test("caps the number of files", () => {
   expect(skipped).toEqual(["f10.txt", "f11.txt"]);
 });
 
+test("sends one copy of a deliverable reachable by two paths", () => {
+  // The write tool reports .work/slug/page.html, deliver.sh copies it to
+  // out/slug/page.html and the folder scan finds that one. Both are real,
+  // different files with one name, so both used to be uploaded.
+  const dir = workspace();
+  mkdirSync(join(dir, ".work", "report"), { recursive: true });
+  writeFileSync(join(dir, ".work", "report", "report.html"), "<h1>hi</h1>");
+  const { files } = pickAttachments(
+    [".work/report/report.html", join(dir, "out", "report.html"), "out/report.html"],
+    dir,
+  );
+  expect(files.map((f) => f.name)).toEqual(["report.html"]);
+});
+
+test("never sends a file from a dot folder, so scratch stays scratch", () => {
+  const dir = workspace();
+  mkdirSync(join(dir, ".work"), { recursive: true });
+  writeFileSync(join(dir, ".work", "draft.html"), "<p>d</p>");
+  writeFileSync(join(dir, ".secret.md"), "shh");
+  expect(pickAttachments([".work/draft.html", ".secret.md"], dir).files).toEqual([]);
+});
+
+test("a page goes out without its preview image", () => {
+  const dir = workspace();
+  writeFileSync(join(dir, "out", "report.png"), "png");
+  writeFileSync(join(dir, "out", "photo.png"), "png");
+  // Either order: the image may be found before the page.
+  expect(pickAttachments(["out/report.png", "out/report.html"], dir).files.map((f) => f.name)).toEqual(["report.html"]);
+  expect(pickAttachments(["out/report.html", "out/report.png"], dir).files.map((f) => f.name)).toEqual(["report.html"]);
+  // An image nobody paired with a page is still worth sending.
+  expect(pickAttachments(["out/photo.png"], dir).files.map((f) => f.name)).toEqual(["photo.png"]);
+});
+
 test("finds file names in the answer, not URLs or source files", () => {
   expect(pathsInText("Saved `out/report.html` and ./chart.png. See https://x.com/a.html, edited main.ts")).toEqual([
     "out/report.html",

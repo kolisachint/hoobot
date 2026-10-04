@@ -401,6 +401,12 @@ work together. Each has its own hoocode conversation, model and settings.
   command, or names in its answer are attached to the answer. Source code isn't; nothing outside the work
   folder is. Up to 10 files and ~9.5 MB per answer. HTML arrives as a
   download; Discord doesn't render it.
+  Each file goes out **once**: a file reachable by two paths (the scratch
+  copy the write tool reported and the `out/` copy a shell command made) is
+  sent a single time, and dot folders (`.work/`, `.slack/`, ...) are never
+  sent at all. When a `.html` page and a `.png` rendered from it are both
+  there, **only the page goes out** — the image would just double the
+  answer.
   A channel and its threads share a folder. When two of them are working at
   the same time, each answer only gets the files it wrote or names, so a
   file isn't posted in both places. A file nobody names is left out rather

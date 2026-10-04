@@ -2,10 +2,17 @@
  * Files the model wrote during a turn that are worth sending back to the chat
  * (HTML pages, images, PDFs, ...). Only regular files inside the work folder,
  * of a known type and under Discord's upload limit (the smaller one), are picked.
+ *
+ * Two rules keep one deliverable from arriving twice: a file name is sent
+ * once, and a `.html` page replaces the `.png` preview rendered from it.
  */
 import { readdirSync, realpathSync, statSync } from "node:fs";
 import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
-import { INBOX_DIRS } from "./inbound.ts";
+
+/** A page you can open in a browser. */
+const PAGE_EXTENSIONS = new Set([".html", ".htm"]);
+/** A rendered preview, which the page it sits next to already shows. */
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
 
 /** File types sent back as attachments. Source code is left out on purpose. */
 export const ATTACH_EXTENSIONS = new Set([
@@ -141,10 +148,33 @@ function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** Scratch and inboxes live in dot folders (`.work/`, `.slack/`, ...): never sent. */
+function inDotFolder(rel: string): boolean {
+  return rel.split("/").some((seg) => seg.startsWith("."));
+}
+
+/** `report.html` -> `report`; the key that ties a page to its preview image. */
+function stem(name: string): string {
+  const ext = extname(name);
+  return (ext ? name.slice(0, -ext.length) : name).toLowerCase();
+}
+
 /**
  * The files to attach, in the order given. Relative paths resolve against
  * `workdir`. Skips anything missing, outside `workdir` (after following
- * symlinks), of another type, or past the size/count limits.
+ * symlinks), of another type, in a dot folder, or past the size/count limits.
+ *
+ * Two more rules, because Slack and Discord both show one row per file and a
+ * reader can't tell rows apart:
+ *
+ * - **One name, one file.** A deliverable is often reachable twice — the
+ *   scratch copy the write tool reported and the `out/` copy a shell command
+ *   produced, or the same path from the answer text and from the folder scan.
+ *   Uploading both posted the same page to the channel twice. First one wins.
+ * - **A page beats its preview.** `report.html` and `report.png` are one
+ *   deliverable, and the page is the real one: Slack can't render it and
+ *   downloads it, the phone shows it in a browser. Sending the image too
+ *   just doubles the answer for no gain.
  */
 export function pickAttachments(paths: Iterable<string>, workdir: string): { files: Attachment[]; skipped: string[] } {
   const files: Attachment[] = [];
@@ -155,8 +185,9 @@ export function pickAttachments(paths: Iterable<string>, workdir: string): { fil
   } catch {
     return { files, skipped };
   }
-  const seen = new Set<string>();
-  let total = 0;
+  // Collect first, choose second: the page may come after its preview image.
+  const found: { real: string; name: string; size: number }[] = [];
+  const seenPaths = new Set<string>();
   for (const p of paths) {
     if (!ATTACH_EXTENSIONS.has(extname(p).toLowerCase())) continue;
     let real: string;
@@ -171,16 +202,28 @@ export function pickAttachments(paths: Iterable<string>, workdir: string): { fil
     }
     const rel = relative(root, real);
     if (!rel || rel.startsWith("..") || isAbsolute(rel)) continue;
-    // Files people sent on a chat: never echoed back.
-    if (Object.values(INBOX_DIRS).some((dir) => rel === dir || rel.startsWith(`${dir}/`))) continue;
-    if (seen.has(real)) continue;
-    seen.add(real);
-    if (files.length >= MAX_FILES || total + size > MAX_TOTAL_BYTES) {
-      skipped.push(basename(real));
+    // Files people sent on a chat, and scratch: never echoed back.
+    if (inDotFolder(rel)) continue;
+    if (seenPaths.has(real)) continue;
+    seenPaths.add(real);
+    found.push({ real, name: basename(real), size });
+  }
+
+  const pages = new Set(found.filter((f) => PAGE_EXTENSIONS.has(extname(f.name).toLowerCase())).map((f) => stem(f.name)));
+  const sent = new Set<string>();
+  let total = 0;
+  for (const f of found) {
+    const ext = extname(f.name).toLowerCase();
+    const key = f.name.toLowerCase();
+    if (sent.has(key)) continue; // the same file by another route
+    if (IMAGE_EXTENSIONS.has(ext) && pages.has(stem(f.name))) continue; // preview of a page we're sending
+    sent.add(key);
+    if (files.length >= MAX_FILES || total + f.size > MAX_TOTAL_BYTES) {
+      skipped.push(f.name);
       continue;
     }
-    total += size;
-    files.push({ attachment: real, name: basename(real) });
+    total += f.size;
+    files.push({ attachment: f.real, name: f.name });
   }
   return { files, skipped };
 }
