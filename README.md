@@ -123,6 +123,12 @@ each. `CATCHUP_MINUTES` (default 1440) bounds how far back it looks,
 `CATCHUP_MAX` (default 20) the most it replays at once; `CATCHUP_MINUTES=0`
 turns it off.
 
+Discord works the same way. Its gateway is live too, and a session too old to
+resume makes the bot re-identify, which delivers nothing — so on every
+reconnect the Discord bot also asks history what it missed after the last
+message it handled and answers those mentions, oldest first, once each. Both
+surfaces read the same `CATCHUP_MINUTES` / `CATCHUP_MAX`.
+
 ## Run in the background (macOS)
 
 Runs at login and restarts itself if it crashes.
@@ -371,8 +377,8 @@ work together. Each has its own hoocode conversation, model and settings.
 - **Threads:** open a thread for a side task. It gets its own
   conversation in the same folder; its first call also reads the channel
   messages that led up to it. Results stay in the thread.
-- **Two bots talking (Slack):** set `PEER_BOT_IDS` to another bot's
-  member ID (e.g. a companion hoobot) and it can call this one by
+- **Two bots talking (Discord and Slack):** set `PEER_BOT_IDS` to another
+  bot's user id (e.g. a companion hoobot) and it can call this one by
   mentioning it; `@name` of a peer in an answer becomes a real mention.
   To stop loops, a peer gets `PEER_TURNS` (default 2) answers per thread;
   then an allowed user gets **Yes / No** buttons for 2 more. A person
@@ -458,9 +464,9 @@ the thread; the first answer wins and the others see it resolved.
 | `src/index.ts` | Starts Discord and/or Slack, whichever have tokens |
 | `src/core.ts` | Shared by both: app-servers per folder, sessions, allow list, commands, prompt building |
 | `src/chat.ts` | The `ChatSpace` interface a session talks to |
-| `src/discord.ts` | Discord side: mentions and replies → calls; channels and threads → spaces; buttons, menus |
-| `src/slack.ts` | Slack side (Socket Mode): mentions → calls; channels and threads → spaces; Block Kit buttons, menus |
-| `src/peers.ts` | Peer bots: turns per thread, `@name` → Slack mention |
+| `src/discord.ts` | Discord side: mentions and replies → calls; channels and threads → spaces; buttons, menus; catch-up |
+| `src/slack.ts` | Slack side (Socket Mode): mentions → calls; channels and threads → spaces; Block Kit buttons, menus; catch-up |
+| `src/peers.ts` | Peer bots: turns per thread, `@name` → Discord/Slack mention |
 | `src/skills.ts` | The bundled `skills/`, seeded into a work folder without clobbering local edits; `hoobot path` |
 | `src/mrkdwn.ts` | Markdown → Slack mrkdwn, and Slack text → plain text |
 | `src/context.ts` | What people said since the bot last read a space |

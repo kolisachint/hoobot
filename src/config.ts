@@ -26,16 +26,19 @@ export const config = {
    */
   allowedUserIds: new Set(list("ALLOWED_USER_IDS")),
   /**
-   * Slack user IDs of other bots (e.g. a companion hoobot) that may call
-   * this one by mentioning it. Empty = bots are ignored.
+   * User IDs of other bots (e.g. a companion hoobot) that may call this one
+   * by mentioning it: Discord ids (digits) and Slack member IDs, mixed in one
+   * list. Empty = bots are ignored. Only the ids of the surface's own bots
+   * matter — a message counts as a peer when the chat says its author is a
+   * bot, so a person listed here is still a person.
    */
   peerBotIds: new Set(list("PEER_BOT_IDS")),
   /** Answers a peer bot gets per thread before an allowed user is asked for more. */
   peerTurns: Math.max(1, Number(process.env.PEER_TURNS ?? 2) || 2),
   /**
-   * Slack only: after a dropped socket, look this far back for mentions of
-   * the bot that never arrived, and answer them (0 = off). Socket Mode is a
-   * live connection, so anything in the gap is lost for good without this.
+   * After a dropped connection, look this far back for mentions of the bot
+   * that never arrived, and answer them (0 = off). Both chats are live
+   * connections, so anything in the gap is lost for good without this.
    */
   catchUpMinutes: Number(process.env.CATCHUP_MINUTES ?? 1440) || 0,
   /** Most mentions one catch-up replays, so a long gap can't stampede the bot. */
