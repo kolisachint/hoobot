@@ -86,7 +86,8 @@ Two consequences worth knowing before you touch them:
 
 A bot's Slack user id changes every time its app is recreated. After any
 `create`, `tokens`, or rename, rewire the mesh rather than editing
-`PEER_BOT_IDS`:
+`PEER_BOT_IDS`. (A Discord bot's user id is its application id and doesn't
+change, so the mesh only has to be rewired when the Slack side does.)
 
 ```sh
 bun "$(…/skills/bot-slack/scripts/peer-sync.ts)" --dry-run
@@ -95,6 +96,15 @@ bun "$(…/skills/bot-slack/scripts/peer-sync.ts)" --dry-run
 It reads every id from Slack via each bot's own token, so a bot whose app is
 dead is reported instead of being wired in. Stale ids produce no error at
 all — the bot stays connected and simply never answers.
+
+## Both chats, or one
+
+`DISCORD_TOKEN`, or the two Slack tokens, or both — each surface starts on its
+own and they share everything else (src/core.ts). `test/discord.e2e.ts` runs
+the Discord surface end to end without a token: it drives the real message
+path against `test/fixtures/echo-app-server.ts`, a stand-in app-server that
+answers a turn with whatever the prompt asked for. `bun test/live.ts` is the
+one that needs a real Discord app.
 
 ## Other notes
 
