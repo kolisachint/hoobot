@@ -65,6 +65,35 @@ export function slackFiles(files: SlackFile[] | undefined): AttachmentLike[] {
     }));
 }
 
+/**
+ * Which mentions a reconnect has to replay, oldest first.
+ *
+ * A dropped socket loses events: Slack doesn't replay them, so a mention
+ * that arrived while the websocket was flapping is simply gone. This picks
+ * the ones a reconnect owes an answer to — a mention of us, from someone
+ * else, newer than `since`, that we haven't already handled.
+ *
+ * `isSeen` is asked about `<channel>:<ts>` so a mention that *did* arrive
+ * (or that a previous catch-up already answered) isn't answered twice.
+ */
+export function toReplay(
+  messages: SlackMessage[],
+  channel: string,
+  botUserId: string,
+  isSeen: (key: string) => boolean,
+  since: number,
+  limit: number,
+): SlackMessage[] {
+  return messages
+    .filter((m) => Number(m.ts) > since)
+    .filter((m) => USER_SUBTYPES.has(m.subtype))
+    .filter((m) => !!m.user && m.user !== botUserId)
+    .filter((m) => stripMention(m.text ?? "", botUserId) !== null)
+    .filter((m) => !isSeen(`${channel}:${m.ts}`))
+    .sort((a, b) => Number(a.ts) - Number(b.ts))
+    .slice(0, limit);
+}
+
 /** A space id: the channel, or `<channel>/<thread ts>` for a thread. */
 export function slackSpaceId(channel: string, threadTs?: string | null): string {
   return threadTs ? `${channel}/${threadTs}` : channel;
@@ -114,6 +143,11 @@ export class Slack {
   private budget = new TurnBudget(config.peerTurns);
   /** Spaces where "allow more turns?" is already asked. */
   private asking = new Set<string>();
+  /** Newest event ts handled, so a reconnect knows the gap it has to fill. */
+  private highWater = 0;
+  /** Threads this process has seen, so a mention in an old one is still found. */
+  private threads = new Set<string>();
+  private catchingUp = false;
 
   constructor(botToken: string, appToken: string) {
     this.web = new WebClient(botToken, { logLevel: LogLevel.ERROR });
@@ -151,6 +185,9 @@ export class Slack {
     }
     this.socket.on("message", (e: any) => this.onEvent(e));
     this.socket.on("interactive", (e: any) => this.onInteractive(e));
+    // Every reconnect, not just the first connect: `catchUp` is a no-op
+    // until an event has been handled, so the first `connected` does nothing.
+    this.socket.on("connected", () => void this.catchUp());
     await this.socket.start();
     console.log(`Slack: logged in as @${auth.user} in ${auth.team}`);
     if (this.peers.size) console.log(`Slack: peer bots ${[...new Set(this.peers.keys())].map((n) => "@" + n).join(", ")} (${config.peerTurns} turns per thread)`);
@@ -167,6 +204,10 @@ export class Slack {
     if (this.seen.has(envelope_id) || this.seen.has(`${event?.channel}:${event?.ts}`)) return;
     this.remember(envelope_id);
     this.remember(`${event?.channel}:${event?.ts}`);
+    // Anything that arrives is proof it arrived: the high-water mark is
+    // what a reconnect treats as "everything before this was delivered".
+    const ts = Number(event?.ts);
+    if (Number.isFinite(ts) && ts > this.highWater) this.highWater = ts;
     try {
       await this.onMessage(event);
     } catch (err) {
@@ -205,6 +246,7 @@ export class Slack {
     console.log(`[slack] ${event.user} in ${channel}: ${String(event.text ?? "").slice(0, 80)}`);
 
     const threadTs: string | undefined = event.thread_ts && event.thread_ts !== event.ts ? event.thread_ts : undefined;
+    if (threadTs) this.threads.add(slackSpaceId(channel, threadTs));
     const space = this.space(channel, threadTs);
     if (!peer) this.budget.reset(space.id);
     else if (!(await this.peerTurn(space))) return;
@@ -339,6 +381,124 @@ export class Slack {
         return { msg, pick };
       },
     };
+  }
+
+  /**
+   * Answer the mentions a dropped socket swallowed.
+   *
+   * Socket Mode is a live websocket, not a queue: when it drops, the events
+   * in the gap are gone, and the reconnect that fixes the socket brings none
+   * of them back. So on every reconnect we ask Slack what was said after the
+   * high-water mark and put the missed mentions through the same door as a
+   * live one.
+   */
+  private async catchUp(): Promise<void> {
+    if (this.catchingUp || !this.highWater || config.catchUpMinutes <= 0) return;
+    this.catchingUp = true;
+    try {
+      const missed = await this.missed();
+      if (!missed.length) return;
+      console.log(`[slack] caught up: ${missed.length} mention(s) missed while the socket was down`);
+      for (const { channel, channelType, message } of missed) {
+        // Marked before the answer, not after: a mention is answered once,
+        // however long the answer takes.
+        this.remember(`${channel}:${message.ts}`);
+        try {
+          await this.onMessage({ ...message, channel, channel_type: channelType });
+        } catch (err) {
+          console.log(`[slack] caught-up message ${channel}:${message.ts} failed: ${err}`);
+        }
+      }
+    } catch (err) {
+      console.log(`[slack] catch-up failed: ${err}`);
+    } finally {
+      this.catchingUp = false;
+    }
+  }
+
+  /** Every mention of us since the high-water mark, oldest first. */
+  private async missed(): Promise<Array<{ channel: string; channelType: string; message: SlackMessage }>> {
+    const floor = Math.max(this.highWater, (Date.now() - config.catchUpMinutes * 60_000) / 1000);
+    const out: Array<{ channel: string; channelType: string; message: SlackMessage }> = [];
+    for (const channel of await this.channels()) {
+      const channelType = await this.channelType(channel);
+      const isSeen = (key: string) => this.seen.has(key);
+      const pick = (messages: SlackMessage[]) => {
+        for (const message of toReplay(messages, channel, this.botUserId, isSeen, floor, config.catchUpMax)) {
+          out.push({ channel, channelType, message });
+        }
+      };
+
+      const starters = await this.historySince(channel, floor);
+      pick(starters);
+      // A mention in a thread arrives as a reply and `conversations.history`
+      // only returns top-level messages, so each thread in the gap is opened.
+      for (const starter of starters) pick((await this.repliesSince(channel, starter.ts, floor)).slice(1));
+      // Threads from before the gap aren't in `history`, but a live
+      // conversation can still get a mention in one while we're disconnected.
+      for (const space of this.threads) {
+        const [threadChannel, threadTs] = space.split("/");
+        if (threadChannel !== channel || !threadTs) continue;
+        pick((await this.repliesSince(threadChannel, threadTs, floor)).slice(1));
+      }
+    }
+    // Channels answer newest-first and a message can be reached twice (a
+    // starter, and a reply in an older thread), so order and dedupe once.
+    const unique = new Map(out.map((m) => [`${m.channel}:${m.message.ts}`, m]));
+    return [...unique.values()].sort((a, b) => Number(a.message.ts) - Number(b.message.ts)).slice(0, config.catchUpMax);
+  }
+
+  /** Channels to search: the ones we're in, or the configured allowlist. */
+  private async channels(): Promise<string[]> {
+    const allowed = [...config.channelIds];
+    if (allowed.length) return allowed;
+    const res: any = await this.web.users.conversations({ types: "public_channel,private_channel", limit: 500 });
+    return res.ok ? ((res.channels ?? []) as Array<{ id: string }>).map((c) => c.id) : [];
+  }
+
+  /** `channel` or `group`, for the `channel_type` a live event carries. */
+  private async channelType(channel: string): Promise<string> {
+    const res: any = await this.web.conversations.info({ channel });
+    if (res?.channel?.is_group) return "group";
+    if (res?.channel?.is_im || res?.channel?.is_mpim) return "im";
+    return "channel";
+  }
+
+  /** Top-level messages of a channel sent after `since`. */
+  private async historySince(channel: string, since: number): Promise<SlackMessage[]> {
+    const out: SlackMessage[] = [];
+    for (let cursor: string | undefined; out.length < config.catchUpMax * 4; ) {
+      const res: any = await this.web.conversations.history({
+        channel,
+        oldest: since.toFixed(6),
+        inclusive: false,
+        limit: 200,
+        cursor,
+      });
+      out.push(...((res.messages ?? []) as SlackMessage[]));
+      cursor = res.has_more ? res.response_metadata?.next_cursor || undefined : undefined;
+      if (!cursor) break;
+    }
+    return out;
+  }
+
+  /** A thread's messages after `since`, the parent first (Slack returns it that way). */
+  private async repliesSince(channel: string, ts: string, since: number): Promise<SlackMessage[]> {
+    const out: SlackMessage[] = [];
+    for (let cursor: string | undefined; out.length < config.catchUpMax * 4; ) {
+      const res: any = await this.web.conversations.replies({
+        channel,
+        ts,
+        oldest: since.toFixed(6),
+        inclusive: false,
+        limit: 200,
+        cursor,
+      });
+      out.push(...((res.messages ?? []) as SlackMessage[]));
+      cursor = res.has_more ? res.response_metadata?.next_cursor || undefined : undefined;
+      if (!cursor) break;
+    }
+    return out;
   }
 
   /** Clicks on buttons and menus. */

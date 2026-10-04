@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 process.env.DISCORD_TOKEN ??= "x";
 process.env.ALLOWED_USER_IDS ??= "1";
-const { choiceBlocks, peerCall, slackFiles, slackSpaceId, stripMention, toMessageLike } = await import("../src/slack.ts");
+const { Slack, choiceBlocks, peerCall, slackFiles, slackSpaceId, stripMention, toMessageLike, toReplay } = await import("../src/slack.ts");
 const { formatContext, idOrder, selectSince, toContext } = await import("../src/context.ts");
 
 test("a call is a message that mentions the bot; the mention is removed", () => {
@@ -46,6 +46,71 @@ test("Slack messages become context lines; joins and the bot's own are skipped",
   const ci = toContext(toMessageLike({ ts: "2", bot_id: "B1", subtype: "bot_message", username: "ci", text: "build failed" }, names), "UBOT");
   expect(ci?.author).toBe("ci (bot)");
   expect(formatContext([ci!], "#dev", "slack")).toStartWith('<slack-context where="#dev"');
+});
+
+test("catch-up: mentions of the bot that arrived while the socket was down, oldest first", () => {
+  const t0 = Math.floor(Date.now() / 1000);
+  const at = (n: number) => `${t0 + n}.000100`;
+  const seen = new Set([`C1:${at(5)}`]);
+  const pick = (messages: any[], since = t0, limit = 20) => toReplay(messages, "C1", "UBOT", (k) => seen.has(k), since, limit);
+  const messages = [
+    { ts: at(10), user: "UOWNER", text: "just chatting, no mention" },
+    { ts: at(9), user: "UOWNER", text: "<@UBOT> answer me" },
+    { ts: at(11), user: "UBOT", text: "<@UOWNER> my own answer" },
+    { ts: at(8), user: "UOWNER", subtype: "channel_join", text: "<@UBOT> joined" },
+    { ts: at(7), user: "UOWNER", text: "<@UOTHER> not me" },
+    { ts: at(5), user: "UOWNER", text: "<@UBOT> already answered" },
+    { ts: `${t0}.000000`, user: "UOWNER", text: "<@UBOT> at the high-water mark" },
+  ];
+  expect(pick(messages).map((m) => m.ts)).toEqual([at(9)]);
+  expect(pick(messages, t0 + 8).map((m) => m.ts)).toEqual([at(9)]);
+  expect(
+    pick([...messages, { ts: at(12), user: "UOWNER", text: "<@UBOT> one" }, { ts: at(13), user: "UOWNER", text: "<@UBOT> two" }], t0, 1).map(
+      (m) => m.ts,
+    ),
+  ).toEqual([at(9)]);
+});
+
+test("catch-up: finds the mentions history and replies don't hand over on their own", async () => {
+  const t0 = Math.floor(Date.now() / 1000);
+  const at = (n: number) => `${t0 + n}.000100`;
+  const slack: any = new Slack("xoxb-x", "xapp-x");
+  slack.botUserId = "UBOT";
+  slack.highWater = t0;
+  slack.threads.add(`C1/${at(-100000)}`);
+  const calls: string[] = [];
+  const replies: Record<string, any[]> = {
+    // A thread from long before the gap: only this process knows it exists.
+    [at(-100000)]: [
+      { ts: at(-100000), user: "UOWNER", text: "old" },
+      { ts: at(20), user: "UOWNER", thread_ts: at(-100000), text: "<@UBOT> missed in an old thread" },
+    ],
+    [at(10)]: [
+      { ts: at(10), user: "UOWNER", text: "new thread" },
+      { ts: at(11), user: "UOWNER", thread_ts: at(10), text: "<@UBOT> missed in a new thread" },
+      { ts: at(12), user: "UOWNER", thread_ts: at(10), text: "no mention here" },
+    ],
+  };
+  slack.web = {
+    users: { conversations: async () => ({ ok: true, channels: [{ id: "C1" }, { id: "C2" }] }) },
+    conversations: {
+      info: async () => ({ ok: true, channel: { id: "C1" } }),
+      history: async ({ channel, oldest }: any) => {
+        calls.push(`history ${channel} ${oldest}`);
+        const messages = channel === "C1" ? [{ ts: at(10), user: "UOWNER", text: "<@UBOT> missed at top level" }] : [];
+        return { ok: true, messages };
+      },
+      replies: async ({ channel, ts, oldest }: any) => {
+        calls.push(`replies ${ts} ${oldest}`);
+        return { ok: true, messages: channel === "C1" ? (replies[ts] ?? []) : [] };
+      },
+    },
+  };
+  const missed: Array<{ channel: string; channelType: string; message: any }> = await slack.missed();
+  expect(missed.map((m) => m.message.ts)).toEqual([at(10), at(11), at(20)]);
+  expect(missed.every((m: any) => m.channel === "C1" && m.channelType === "channel")).toBe(true);
+  expect(calls).toContain(`history C1 ${t0.toFixed(6)}`);
+  expect(calls).toContain(`replies ${at(-100000)} ${t0.toFixed(6)}`);
 });
 
 test("files: private download URLs, names and types", () => {
