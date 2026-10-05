@@ -54,7 +54,10 @@ RUNTIME="${HOOBOT_RUNTIME_DIR:-$HOME/.hoobot/runtime}"
 RUN_FROM_NPM="${RUN_FROM_NPM:-1}"
 INTERVAL="${HOOBOT_INTERVAL:-30}"        # seconds between checks
 FAILS="${HOOBOT_FAILS:-2}"               # unhealthy checks before a restart
-COOLDOWN="${HOOBOT_COOLDOWN:-120}"       # seconds between attempts at one bot
+COOLDOWN="${HOOBOT_COOLDOWN:-120}"       # base seconds between attempts at one bot
+BACKOFF_MAX="${HOOBOT_BACKOFF_MAX:-1800}" # ceiling for the growing cooldown
+LOOP_WINDOW="${HOOBOT_LOOP_WINDOW:-900}"  # a bot that restarts this often is looping
+LOOP_MAX="${HOOBOT_LOOP_MAX:-5}"          # restarts inside the window before we stop trying
 MANAGER_PORT="${MANAGER_PORT:-8790}"
 
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
@@ -171,8 +174,11 @@ check_manager() {
 # $1 instance name. $2 the action to take when it is not healthy.
 check_bot() {
   name="$1"
+  # A bot that stays healthy is forgiven entirely: the streak and the history
+  # are cleared, so the next bad hour starts from a clean slate.
   if alive "$name" && bot_healthy "$name"; then
     echo 0 >"$STATE/$name.fails"
+    : >"$STATE/$name.history"
     return 0
   fi
   if ! alive "$name"; then
@@ -181,24 +187,72 @@ check_bot() {
   else
     fails=$(( $(cat "$STATE/$name.fails" 2>/dev/null || echo 0) + 1 ))
     echo "$fails" >"$STATE/$name.fails"
-    say_log "$name is unhealthy (check $fails/$FAILS)"
+    # Say *why* it is unhealthy when the bot can tell us. A wedged turn is
+    # reported as ok:false now, so this is where a silent hang becomes visible.
+    body="$(curl -fsS --max-time 5 "http://127.0.0.1:$(health_port "$name")/healthz" 2>/dev/null || true)"
+    case "$body" in
+      *'"ok":false'*)
+        stuck="$(printf '%s' "$body" | sed -n 's/.*"stuckSessions":\[\([^]]*\)\].*/\1/p')"
+        if [ -n "$stuck" ]; then
+          say_log "$name is unhealthy: a turn is stuck (check $fails/$FAILS) — $stuck"
+        else
+          say_log "$name reports itself unhealthy (check $fails/$FAILS)"
+        fi ;;
+      *) say_log "$name is unhealthy (check $fails/$FAILS)" ;;
+    esac
     [ "$fails" -ge "$FAILS" ] || return 0
     echo 0 >"$STATE/$name.fails"
     action=restart
   fi
-  # Space out attempts: a bot that cannot start (bad token, port taken) must
-  # not be relaunched every 30 seconds for the rest of the afternoon.
+
+  # Crash-loop guard. A bot that cannot start (bad token, port taken, a build
+  # that dies on boot) used to be relaunched every ${COOLDOWN}s for the rest of
+  # the afternoon: a restart loop that looks like normal operation in the log.
+  # Count the attempts in a rolling window and stop once it is clearly looping.
+  history="$STATE/$name.history"
+  touch "$history"
+  t="$(now)"
+  # Drop everything older than the window, then add this attempt.
+  awk -v cutoff="$(( t - LOOP_WINDOW ))" '$1 > cutoff' "$history" >"$history.tmp" 2>/dev/null || :
+  mv "$history.tmp" "$history"
+  echo "$t" >>"$history"
+  attempts="$(wc -l <"$history" | tr -d ' ')"
+  if [ "$attempts" -gt "$LOOP_MAX" ]; then
+    if [ ! -f "$STATE/$name.holding" ]; then
+      : >"$STATE/$name.holding"
+      say_log "$name has failed $attempts times in ${LOOP_WINDOW}s — holding off. This usually needs a person: check scripts/runtime.sh logs $name"
+    fi
+    return 0
+  fi
+  rm -f "$STATE/$name.holding"
+
+  # Space out attempts, and back off further each time one fails, so a
+  # permanently broken bot stops consuming the machine.
+  streak="$(cat "$STATE/$name.streak" 2>/dev/null || echo 0)"
+  wait_for="$COOLDOWN"
+  i=0
+  while [ "$i" -lt "$streak" ]; do
+    wait_for=$(( wait_for * 2 ))
+    [ "$wait_for" -le "$BACKOFF_MAX" ] || { wait_for="$BACKOFF_MAX"; break; }
+    i=$((i + 1))
+  done
   last="$(cat "$STATE/$name.last" 2>/dev/null || echo 0)"
-  if [ "$(( $(now) - last ))" -lt "$COOLDOWN" ]; then
-    say_log "$name: skipping $action, inside the ${COOLDOWN}s cooldown"
+  if [ "$(( $(now) - last ))" -lt "$wait_for" ]; then
+    say_log "$name: skipping $action, inside the ${wait_for}s cooldown"
     return 0
   fi
   now >"$STATE/$name.last"
   say_log "$name: $action"
   if runtime_cmd "$action" "$name" >>"$LOG" 2>&1; then
+    echo 0 >"$STATE/$name.streak"
     say_log "$name is up (pid $(cat "$RUNTIME/$name/$name.pid" 2>/dev/null || echo '?'))"
   else
-    say_log "$name did not come up; see the lines above and: scripts/runtime.sh logs $name"
+    echo "$(( streak + 1 ))" >"$STATE/$name.streak"
+    # Report the wait we will actually use next time, clamped like the real one,
+    # so the log does not promise a shorter gap than we will take.
+    next=$(( wait_for * 2 ))
+    [ "$next" -le "$BACKOFF_MAX" ] || next="$BACKOFF_MAX"
+    say_log "$name did not come up (attempt $attempts in ${LOOP_WINDOW}s, next try no sooner than ${next}s); see the lines above and: scripts/runtime.sh logs $name"
   fi
 }
 
@@ -343,7 +397,8 @@ do_stop() {
   for name in $(targets "$@"); do
     # Unmark first: the marker is what the loop watches, so a bot stopped
     # here stays stopped across restarts and logins.
-    rm -f "$RUNTIME/$name/supervised" "$STATE/$name.fails" "$STATE/$name.last"
+    rm -f "$RUNTIME/$name/supervised" "$STATE/$name.fails" "$STATE/$name.last" \
+          "$STATE/$name.streak" "$STATE/$name.history" "$STATE/$name.holding"
     runtime_cmd stop "$name" 2>&1 | sed 's/^/  /' || true
   done
   if [ $# -eq 0 ]; then

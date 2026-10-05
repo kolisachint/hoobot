@@ -11,6 +11,7 @@
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { config, surfaces } from "./config.ts";
+import { error, log } from "./log.ts";
 
 const VERSION: string = (() => {
   try {
@@ -34,7 +35,19 @@ export type SurfaceStatus = {
 };
 
 /** One live conversation, for `/api/bots`. Provided by src/core.ts. */
-export type SessionStatus = { key: string; surface: string; id: string; workdir: string; busy: boolean };
+export type SessionStatus = {
+  key: string;
+  surface: string;
+  id: string;
+  workdir: string;
+  busy: boolean;
+  /** How long the running turn has been going, in ms. 0 when idle. */
+  turnAgeMs?: number;
+  /** How long the running turn has gone without an event, in ms. 0 when idle. */
+  turnStalledMs?: number;
+  /** True when the turn has outrun `config.turnStuckMs`. */
+  stuck?: boolean;
+};
 
 /**
  * What the bot is doing, kept by whoever is running it: the surfaces
@@ -92,9 +105,16 @@ export class HealthState {
 }
 
 /** The JSON body of `/healthz`. */
-export function healthBody(state: HealthState): Record<string, unknown> {
+export function healthBody(state: HealthState, sessions: () => SessionStatus[] = () => []): Record<string, unknown> {
+  // Liveness used to mean "the process is up", which a bot with a wedged turn
+  // satisfied perfectly — so the supervisor restarted nothing while a thread sat
+  // silent for hours. A turn that has outrun `turnStuckMs` is a real outage for
+  // whoever is waiting on it, so it is reported here and the bot says itself
+  // unhealthy until the session gives up on its own or recovers.
+  const stuck = sessions().filter((s) => s.stuck);
   return {
-    ok: state.ok,
+    ok: state.ok && stuck.length === 0,
+    ...(stuck.length ? { stuckSessions: stuck.map((s) => s.key) } : {}),
     instance: state.instance,
     pid: process.pid,
     version: VERSION,
@@ -108,7 +128,10 @@ export function healthBody(state: HealthState): Record<string, unknown> {
 /** The JSON body of `/api/bots`: everything the desktop UI shows first. */
 export function botsBody(state: HealthState, sessions: () => SessionStatus[]): Record<string, unknown> {
   return {
-    ...healthBody(state),
+    ...healthBody(state, sessions),
+    // The detail view always reports ok: only /healthz is the supervisor's
+    // signal, and a stuck session listed below should not fail the UI's fetch.
+    ok: state.ok,
     workdir: config.workdir,
     workdirs: [config.workdir, ...config.workspaces.values()],
     channels: Object.fromEntries(config.workspaces),
@@ -140,7 +163,7 @@ export function startHealthServer(
 ): HealthServer | null {
   if (process.env.HEALTH_PORT?.trim().toLowerCase() === "off") return null;
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
-    console.error(`HEALTH_PORT=${port} isn't a port; not serving health.`);
+    error(`HEALTH_PORT=${port} isn't a port; not serving health.`);
     return null;
   }
   let server: ReturnType<typeof Bun.serve>;
@@ -150,16 +173,27 @@ export function startHealthServer(
       port,
       fetch(req) {
         const path = new URL(req.url).pathname.replace(/\/+$/, "") || "/";
-        if (path === "/healthz") return Response.json(healthBody(state));
+        if (path === "/healthz") return Response.json(healthBody(state, sessions));
         if (path === "/api/bots") return Response.json(botsBody(state, sessions));
         if (path === "/") return Response.redirect("/healthz");
         return Response.json({ error: "not found", paths: ["/healthz", "/api/bots"] }, { status: 404 });
       },
     });
   } catch (err) {
-    console.error(`Health server not started on port ${port}: ${err instanceof Error ? err.message : String(err)}`);
+    const why = err instanceof Error ? err.message : String(err);
+    // Losing the port is not harmless, and it used to fail silently: the bot
+    // kept working while serving nothing, so supervise.sh's curl failed and it
+    // restarted the bot every 120s, all day, for a bot that was completely
+    // fine. Without the port this process is indistinguishable from a dead
+    // one, so say exactly that — and name the fix.
+    error(
+      `Health server not started on port ${port}: ${why}. ` +
+        `This bot will answer no health checks, so the supervisor will restart it every cycle. ` +
+        `Usually another instance still owns ${port} — check with: ` +
+        `lsof -nP -iTCP:${port} -sTCP:LISTEN`,
+    );
     return null;
   }
-  console.log(`Health: ${server.url}healthz (${state.instance})`);
+  log(`Health: ${server.url}healthz (${state.instance})`);
   return { port: server.port ?? port, url: server.url.href.replace(/\/$/, ""), stop: () => server.stop(true) };
 }

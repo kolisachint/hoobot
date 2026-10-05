@@ -50,6 +50,7 @@ import {
   writeInstance,
   type Instance,
 } from "./instances.ts";
+import { error, log } from "./log.ts";
 
 /** Default port for the manager itself. Bots start at 8787, so nothing collides. */
 export const DEFAULT_MANAGER_PORT = 8790;
@@ -392,7 +393,7 @@ export function startManager(opts: { dir?: string; port?: number } = {}): Manage
   if (process.env.MANAGER_PORT?.trim().toLowerCase() === "off") return null;
   const port = opts.port ?? Number(process.env.MANAGER_PORT ?? DEFAULT_MANAGER_PORT);
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
-    console.error(`MANAGER_PORT=${port} isn't a port; not serving the manager.`);
+    error(`MANAGER_PORT=${port} isn't a port; not serving the manager.`);
     return null;
   }
   let server: ReturnType<typeof Bun.serve>;
@@ -413,10 +414,10 @@ export function startManager(opts: { dir?: string; port?: number } = {}): Manage
       },
     });
   } catch (err) {
-    console.error(`Manager not started on port ${port}: ${err instanceof Error ? err.message : String(err)}`);
+    error(`Manager not started on port ${port}: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
-  console.log(`Bot manager: ${server.url.href.replace(/\/$/, "")} (runtime ${runtimeDir(opts.dir)})`);
+  log(`Bot manager: ${server.url.href.replace(/\/$/, "")} (runtime ${runtimeDir(opts.dir)})`);
   return { port: server.port ?? port, url: `http://127.0.0.1:${server.port ?? port}`, stop: () => server.stop(true) };
 }
 
@@ -432,7 +433,7 @@ export function runManager(args: string[]): void {
     try {
       Bun.spawn([opener, server.url], { stdout: "ignore", stderr: "ignore" });
     } catch {
-      console.log(`Open ${server.url} in your browser.`);
+      log(`Open ${server.url} in your browser.`);
     }
   }
 }

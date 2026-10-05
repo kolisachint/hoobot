@@ -4,6 +4,10 @@ import { expect, test } from "bun:test";
 // empty) and MODEL, and `??=` would leave those in place.
 process.env.DISCORD_TOKEN = "x";
 process.env.ALLOWED_USER_IDS = "1";
+// Also pinned here, because this file is often the first to load config.ts and
+// a module is only evaluated once per process — whichever test file gets there
+// first decides the value every later file sees.
+process.env.MODEL = "";
 process.env.GUILD_ID = "";
 process.env.CHANNEL_IDS = "";
 process.env.WORKSPACES = "";

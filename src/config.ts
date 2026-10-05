@@ -2,6 +2,7 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { seedSkills } from "./skills.ts";
+import { log, error } from "./log.ts";
 
 function optional(name: string): string | undefined {
   return process.env[name]?.trim() || undefined;
@@ -68,6 +69,27 @@ export const config = {
   approvals: (process.env.APPROVALS?.trim().toLowerCase() === "ask" ? "ask" : "auto") as "auto" | "ask",
   approvalTimeoutMs: Number(process.env.APPROVAL_TIMEOUT_MINUTES ?? 10) * 60_000,
   idleTimeoutMs: Number(process.env.IDLE_TIMEOUT_MINUTES ?? 30) * 60_000,
+  /**
+   * How long a running turn may say nothing before the session stops waiting.
+   *
+   * A turn is not one request: it is acknowledged at once and then streams
+   * events, so the client's per-call deadline never sees it. Measured from the
+   * *last event*, not the start, so a long answer that is still making
+   * progress is left alone and only real silence trips it. When it fires the
+   * bot says so and clears its busy flag, instead of going quiet for good.
+   * The floor keeps a mistyped value (0, or a blank env var) from turning into
+   * a bot that abandons every turn instantly.
+   */
+  turnStallMs: Math.max(1_000, Number(process.env.TURN_STALL_MINUTES ?? 10) * 60_000),
+  /** Deadline for a normal app-server call that expects a prompt reply. */
+  requestTimeoutMs: Math.max(5_000, Number(process.env.REQUEST_TIMEOUT_SECONDS ?? 120) * 1000),
+  /**
+   * A turn past this age is reported as stuck by `/healthz`, so the supervisor
+   * can restart a bot that is wedged rather than merely slow. Deliberately
+   * longer than `turnStallMs`: the session gives up on its own first, and
+   * this is only the backstop for the case where even that did not run.
+   */
+  turnStuckMs: Math.max(60_000, Number(process.env.TURN_STUCK_MINUTES ?? 20) * 60_000),
   debug: process.env.DEBUG === "1",
 };
 
@@ -80,20 +102,20 @@ export function surfaces(): ("discord" | "slack")[] {
 }
 
 if (config.slackBotToken && !config.slackAppToken) {
-  console.error("SLACK_BOT_TOKEN is set but SLACK_APP_TOKEN isn't. Slack needs both (Socket Mode). Set SLACK_APP_TOKEN or clear SLACK_BOT_TOKEN.");
+  error("SLACK_BOT_TOKEN is set but SLACK_APP_TOKEN isn't. Slack needs both (Socket Mode). Set SLACK_APP_TOKEN or clear SLACK_BOT_TOKEN.");
   process.exit(1);
 }
 if (config.slackAppToken && !config.slackBotToken) {
-  console.error("SLACK_APP_TOKEN is set but SLACK_BOT_TOKEN isn't. Slack needs both. Set SLACK_BOT_TOKEN or clear SLACK_APP_TOKEN.");
+  error("SLACK_APP_TOKEN is set but SLACK_BOT_TOKEN isn't. Slack needs both. Set SLACK_BOT_TOKEN or clear SLACK_APP_TOKEN.");
   process.exit(1);
 }
 if (surfaces().length === 0) {
-  console.error("No chat to connect to. Set DISCORD_TOKEN, or SLACK_BOT_TOKEN and SLACK_APP_TOKEN (or both). Copy .env.example to .env and fill it in.");
+  error("No chat to connect to. Set DISCORD_TOKEN, or SLACK_BOT_TOKEN and SLACK_APP_TOKEN (or both). Copy .env.example to .env and fill it in.");
   process.exit(1);
 }
 
 if (config.appServer && config.workspaces.size) {
-  console.error(
+  error(
     "WORKSPACES needs hoobot to start one app-server per folder; it can't be used with APP_SERVER. Clear one of them.",
   );
   process.exit(1);
@@ -118,7 +140,7 @@ export function parseWorkspaces(raw: string): Map<string, string> {
     const path = entry.slice(eq + 1).trim();
     // Discord channel IDs are digits; Slack's are letters and digits (C0123ABCD).
     if (eq < 0 || !/^[A-Za-z0-9]+$/.test(id) || !path) {
-      console.error(`WORKSPACES: "${entry}" should be <channel id>=<folder>, e.g. 123456789=~/code/app or C0123ABCD=~/code/app`);
+      error(`WORKSPACES: "${entry}" should be <channel id>=<folder>, e.g. 123456789=~/code/app or C0123ABCD=~/code/app`);
       process.exit(1);
     }
     out.set(id, resolve(expandHome(path)));
@@ -131,7 +153,7 @@ function expandHome(path: string): string {
 }
 
 if (config.allowedUserIds.size === 0) {
-  console.error(
+  error(
     "ALLOWED_USER_IDS is empty. Refusing to start: anyone in the server or workspace could run shell commands.",
   );
   process.exit(1);
@@ -165,7 +187,7 @@ export function prepareWorkspace(workdir = config.workdir) {
     JSON.stringify({ active_mode: "discord", modes: { discord: { auto_allow: allow } } }, null, 2) + "\n";
   const cfgVariants = [cfg(["read"]), cfg(AUTO_ALLOW)];
   if (writeGenerated(cfgPath, cfg(ask ? ["read"] : AUTO_ALLOW), cfgVariants)) {
-    console.log(`Wrote ${cfgPath} (${ask ? "bash/edit/write ask in the chat first" : "bash/edit/write run without asking"})`);
+    log(`Wrote ${cfgPath} (${ask ? "bash/edit/write ask in the chat first" : "bash/edit/write run without asking"})`);
   }
 
   // The mode keeps the name `discord` whichever chats run, so existing
@@ -184,9 +206,9 @@ export function prepareWorkspace(workdir = config.workdir) {
   // The skills hoobot ships, so a fresh machine has them on the first boot.
   // Anything the user has edited is left alone (see src/skills.ts).
   const { added, updated, kept } = seedSkills(workdir);
-  if (added.length) console.log(`Seeded ${added.length} skill file(s) into ${join(hooDir, "skills")}`);
-  if (updated.length) console.log(`Updated ${updated.length} bundled skill file(s) to this version (${updated.join(", ")})`);
-  if (kept.length) console.log(`Kept ${kept.length} locally edited skill file(s): ${kept.join(", ")}`);
+  if (added.length) log(`Seeded ${added.length} skill file(s) into ${join(hooDir, "skills")}`);
+  if (updated.length) log(`Updated ${updated.length} bundled skill file(s) to this version (${updated.join(", ")})`);
+  if (kept.length) log(`Kept ${kept.length} locally edited skill file(s): ${kept.join(", ")}`);
 }
 
 type Chat = "discord" | "slack";

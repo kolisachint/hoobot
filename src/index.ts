@@ -14,6 +14,7 @@ import { allWorkdirs, config, prepareWorkspace, surfaces } from "./config.ts";
 import { closeAll, sessionStatus } from "./core.ts";
 import { health, startHealthServer } from "./health.ts";
 import { INBOX_DIRS, pruneInbox } from "./inbound.ts";
+import { error, log } from "./log.ts";
 
 for (const dir of allWorkdirs()) prepareWorkspace(dir);
 // Files sent on a chat are kept a week.
@@ -22,16 +23,16 @@ const prune = () => {
     try {
       pruneInbox(dir);
     } catch (err) {
-      console.error(`Can't clean ${dir}/{${Object.values(INBOX_DIRS).join(",")}}: ${err instanceof Error ? err.message : String(err)}`);
+      error(`Can't clean ${dir}/{${Object.values(INBOX_DIRS).join(",")}}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 };
 prune();
 setInterval(prune, 60 * 60 * 1000).unref();
 
-console.log(`Working folder: ${config.workdir}`);
-for (const [channel, dir] of config.workspaces) console.log(`  channel ${channel} → ${dir}`);
-console.log(`Allowed users: ${[...config.allowedUserIds].join(", ")}`);
+log(`Working folder: ${config.workdir}`);
+for (const [channel, dir] of config.workspaces) log(`  channel ${channel} → ${dir}`);
+log(`Allowed users: ${[...config.allowedUserIds].join(", ")}`);
 
 const stops: (() => Promise<void>)[] = [];
 const healthServer = startHealthServer(health, sessionStatus);
@@ -54,19 +55,47 @@ const results = await Promise.all(
 for (const r of results) {
   if ("error" in r) {
     health.failed(r.name, r.error);
-    console.error(`Can't connect to ${r.name}: ${r.error}`);
+    error(`Can't connect to ${r.name}: ${r.error}`);
   } else {
     stops.push(r.stop);
     health.connected(r.name);
   }
 }
 if (stops.length === 0) {
-  console.error("No chat connected. Check the tokens in .env.");
+  error("No chat connected. Check the tokens in .env.");
   process.exit(1);
 }
 
+/**
+ * A rejection nobody handled.
+ *
+ * Without this, one stray rejection could take the whole bot down — and take
+ * every conversation it was serving with it, mid-answer, with nothing in the
+ * log to say why. A bot that is down is obvious; a bot that vanished is not.
+ *
+ * So: report it loudly, name the bot, and keep serving. The alternative —
+ * exiting on any unhandled rejection — trades a lost answer for a lost
+ * channel, which is worse. Anything genuinely fatal still shows up as a failed
+ * health check, because the surfaces are watched.
+ */
+process.on("unhandledRejection", (reason) => {
+  const detail = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+  error(`Unhandled rejection (the bot keeps running): ${detail}`);
+});
+
+/**
+ * A synchronous throw with no handler. Unlike a rejection there is nothing
+ * left to salvage at this point — whatever was running was interrupted — so
+ * this logs and then leaves, and the supervisor restarts us with clean state.
+ * A deliberate `process.exit` never reaches here, so this cannot loop.
+ */
+process.on("uncaughtException", (err) => {
+  error(`Uncaught exception, exiting for the supervisor to restart: ${err.stack ?? err.message}`);
+  process.exit(1);
+});
+
 async function shutdown() {
-  console.log("Shutting down…");
+  log("Shutting down…");
   healthServer?.stop();
   await closeAll();
   await Promise.allSettled(stops.map((stop) => stop()));

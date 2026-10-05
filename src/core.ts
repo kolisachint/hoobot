@@ -5,6 +5,7 @@
  * Surfaces (src/discord.ts, src/slack.ts) only turn their events into a
  * `Call` and their channels into a `ChatSpace`.
  */
+import { log, error, warn } from "./log.ts";
 import { config } from "./config.ts";
 import { CodexClient } from "./codex-client.ts";
 import { health, type SessionStatus } from "./health.ts";
@@ -41,17 +42,26 @@ function appServer(workdir: string): Promise<CodexClient> {
   if (app) return app;
   app = (async () => {
     // A stdio server runs in the work folder; a socket server has its own.
-    const client = await CodexClient.connect(endpoint(), { name: "hoobot", version: "0.1.0" }, { cwd: workdir });
-    console.log(`Connected to app-server ${client.endpoint} in ${workdir}`);
+    const client = await CodexClient.connect(
+      endpoint(),
+      { name: "hoobot", version: "0.1.0" },
+      { cwd: workdir, requestTimeoutMs: config.requestTimeoutMs },
+    );
+    log(`Connected to app-server ${client.endpoint} in ${workdir}`);
     client.on("close", (reason: string) => {
-      console.error(`app-server for ${workdir} closed: ${reason}`);
+      error(`app-server for ${workdir} closed: ${reason}`);
+      // Say what was still running, so the log explains the silence that
+      // follows rather than leaving it to be guessed at.
+      for (const s of [...sessions.values()]) {
+        if (s.workdir !== workdir) continue;
+        if (s.busy) warn(`[${workdir}] dropped a session mid-turn after ${Math.round(s.turnAgeMs / 1000)}s`);
+        s.close();
+      }
       apps.delete(workdir);
-      // Its sessions hold the old client; drop them. Threads resume on the next message.
-      for (const s of [...sessions.values()]) if (s.workdir === workdir) s.close();
     });
     return client;
   })().catch((err) => {
-    console.error(`Can't reach app-server for ${workdir}: ${err instanceof Error ? err.message : String(err)}`);
+    error(`Can't reach app-server for ${workdir}: ${err instanceof Error ? err.message : String(err)}`);
     apps.delete(workdir);
     throw err;
   });
@@ -223,6 +233,11 @@ export function sessionStatus(): SessionStatus[] {
     id: s.thread.id,
     workdir: s.workdir,
     busy: s.busy,
+    turnAgeMs: s.turnAgeMs,
+    turnStalledMs: s.turnStalledMs,
+    // The session's own stall timer normally clears this first; this is the
+    // backstop that lets the supervisor see a bot that never recovered.
+    stuck: s.busy && s.turnAgeMs >= config.turnStuckMs,
   }));
 }
 

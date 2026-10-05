@@ -31,6 +31,7 @@ import { authorName, gatherContext, toContext, type SpaceLike } from "./context.
 import type { ChatSpace, Choice, Picked, Posted } from "./chat.ts";
 import { handleCall, helpText } from "./core.ts";
 import { linkMentions, TurnBudget } from "./peers.ts";
+import { log, error } from "./log.ts";
 
 const HELP = helpText("Discord", "a list");
 
@@ -237,7 +238,7 @@ export class Discord {
   }
 
   async start(): Promise<void> {
-    this.client.on(Events.Error, (err) => console.error("discord gateway error", err));
+    this.client.on(Events.Error, (err) => error("discord gateway error", err));
     this.client.on(Events.MessageCreate, (message) => void this.onEvent(message));
     this.client.once(Events.ClientReady, (c) => void this.onReady(c));
     // Every reconnect, not just the first one. A resume replays the gateway's
@@ -259,7 +260,7 @@ export class Discord {
     this.botId = c.user.id;
     // A re-identify may have happened on another shard or after a guild change.
     this.botRoles.clear();
-    console.log(`Discord: logged in as ${c.user.tag}`);
+    log(`Discord: logged in as ${c.user.tag}`);
     await this.checkPeers();
     await this.catchUp();
   }
@@ -275,17 +276,17 @@ export class Discord {
       if (id === this.botId) continue;
       const user = await this.client.users.fetch(id).catch(() => null);
       if (!user) {
-        console.error(`PEER_BOT_IDS: can't look up ${id}; a peer that writes is still answered.`);
+        error(`PEER_BOT_IDS: can't look up ${id}; a peer that writes is still answered.`);
         continue;
       }
       if (!user.bot) {
-        console.error(`PEER_BOT_IDS: ${id} is ${user.username}, not a bot; it stays a person here.`);
+        error(`PEER_BOT_IDS: ${id} is ${user.username}, not a bot; it stays a person here.`);
         continue;
       }
       this.rememberPeer(user.username, id);
     }
     if (this.peers.size) {
-      console.log(
+      log(
         `Discord: peer bots ${[...new Set(this.peers.keys())].map((n) => "@" + n).join(", ")} (${config.peerTurns} turns per thread)`,
       );
     }
@@ -317,7 +318,7 @@ export class Discord {
     try {
       await this.onMessage(message);
     } catch (err) {
-      console.error("message handler failed", err);
+      error("message handler failed", err);
       await message.reply("Something went wrong on my side. Check the bot's terminal.").catch(() => {});
     }
   }
@@ -345,7 +346,7 @@ export class Discord {
     const space = channel as WorkChannel;
     const roleId = this.botRole(space.guild);
     if (!isCall(message, this.botId, config.peerBotIds, roleId)) return;
-    console.log(`[discord] ${message.author.username} (${message.author.id}) in ${space.id}: ${message.content.slice(0, 80)}`);
+    log(`[discord] ${message.author.username} (${message.author.id}) in ${space.id}: ${message.content.slice(0, 80)}`);
 
     const parentId = space.isThread() ? space.parentId : space.id;
     if (peer) this.rememberPeer(message.author.username, message.author.id);
@@ -427,7 +428,7 @@ export class Discord {
     try {
       const missed = await this.missed();
       if (!missed.length) return;
-      console.log(`[discord] caught up: ${missed.length} mention(s) missed while the gateway was down`);
+      log(`[discord] caught up: ${missed.length} mention(s) missed while the gateway was down`);
       for (const message of missed) {
         // Marked before the answer, not after: a mention is answered once,
         // however long the answer takes.
@@ -435,11 +436,11 @@ export class Discord {
         try {
           await this.onMessage(message);
         } catch (err) {
-          console.log(`[discord] caught-up message ${message.id} failed: ${err}`);
+          log(`[discord] caught-up message ${message.id} failed: ${err}`);
         }
       }
     } catch (err) {
-      console.log(`[discord] catch-up failed: ${err}`);
+      log(`[discord] catch-up failed: ${err}`);
     } finally {
       this.catchingUp = false;
     }
@@ -511,7 +512,7 @@ export class Discord {
         after = oldest.id;
       }
     } catch (err) {
-      console.log(
+      log(
         `[discord] can't read history in ${channel.id} (needs Read Message History): ${err instanceof Error ? err.message : String(err)}`,
       );
     }

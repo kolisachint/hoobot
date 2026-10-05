@@ -4,6 +4,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { error } from "./log.ts";
 
 export type Link = {
   threadId: string;
@@ -21,7 +22,7 @@ export class LinkStore {
       try {
         this.links = JSON.parse(readFileSync(path, "utf8"));
       } catch (err) {
-        console.error(`Could not read ${path}; starting with no links`, err);
+        error(`Could not read ${path}; starting with no links`, err);
       }
     }
   }

@@ -104,3 +104,68 @@ test("the server answers /healthz and /api/bots, and 404s the rest", async () =>
   server.stop();
   process.env.HEALTH_PORT = "off";
 });
+
+test("a stuck turn makes healthz report ok:false and names the session", async () => {
+  // The whole point of the change: a bot whose turn wedged must stop looking
+  // healthy, or the supervisor keeps believing there is nothing to fix.
+  const state = stateWithBothSurfaces("hoo");
+  state.connected("discord");
+  state.connected("slack");
+  expect(state.ok).toBe(true); // healthy until the stuck turn is reported
+  const stuck = [
+    { key: "slack:C1", surface: "slack", id: "C1", workdir: "/tmp/w", busy: true, turnAgeMs: 25 * 60_000, stuck: true },
+  ];
+  const body = healthBody(state, () => stuck);
+  expect(body.ok).toBe(false);
+  expect(body.stuckSessions).toEqual(["slack:C1"]);
+});
+
+test("a busy but progressing turn stays healthy", () => {
+  const state = stateWithBothSurfaces("hoo");
+  state.connected("discord");
+  state.connected("slack");
+  const busy = [
+    { key: "slack:C1", surface: "slack", id: "C1", workdir: "/tmp/w", busy: true, turnAgeMs: 90_000, turnStalledMs: 2_000 },
+  ];
+  const body = healthBody(state, () => busy);
+  expect(body.ok).toBe(true);
+  expect(body.stuckSessions).toBeUndefined();
+});
+
+test("/api/bots still answers ok even with a stuck session, so the UI can load it", () => {
+  // Only /healthz is the supervisor's signal. The detail view has to keep
+  // working, or a wedged bot would also blank the manager page.
+  const state = stateWithBothSurfaces("hoo");
+  state.connected("discord");
+  state.connected("slack");
+  const stuck = [
+    { key: "slack:C1", surface: "slack", id: "C1", workdir: "/tmp/w", busy: true, turnAgeMs: 25 * 60_000, stuck: true },
+  ];
+  const body = botsBody(state, () => stuck);
+  expect(body.ok).toBe(true);
+  expect((body.sessions as unknown[])[0]).toMatchObject({ busy: true, stuck: true });
+});
+
+test("a taken health port is reported loudly rather than silently dropped", () => {
+  // Losing the port means the supervisor's curl fails and it restarts a
+  // perfectly healthy bot forever. The message has to name the cause.
+  // HEALTH_PORT=off is set at the top of this file, so ask for a free port
+  // explicitly rather than relying on the env var.
+  process.env.HEALTH_PORT = "0";
+  const first = startHealthServer(stateWithBothSurfaces("a"), () => [], 0)!;
+  const port = first.port;
+  const seen: string[] = [];
+  const realError = console.error;
+  console.error = (...a: unknown[]) => seen.push(a.map(String).join(" "));
+  try {
+    const second = startHealthServer(new HealthState("b"), () => [], port);
+    expect(second).toBeNull();
+  } finally {
+    console.error = realError;
+    first.stop();
+    process.env.HEALTH_PORT = "off";
+  }
+  const said = seen.join("\n");
+  expect(said).toContain(String(port));
+  expect(said).toContain("restart");
+});
