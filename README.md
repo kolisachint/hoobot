@@ -344,11 +344,49 @@ bun "$(hoobot path skills)/bot-slack/scripts/peer-sync.ts"
 
 Every bot goes in every other bot's list — a peer mesh, not a ring — and a
 bot that cannot authenticate is reported rather than wired in, because
-pointing peers at a dead id is precisely what this prevents.
+pointing peers at a dead id is precisely what this prevents. Discord ids are
+stable, so this re-resolution is a Slack-side concern.
 
 The order for any bot change is **Slack → manager → Slack again to confirm →
 restart → selftest**. See the `bot-slack`, `slack-bot-create` and
 `slack-bot-update` skills.
+
+### Discord has no CLI, so the portal is one step and the rest is a skill
+
+Slack's CLI can make the app; Discord has no equivalent, so a Discord bot
+starts as a person doing three things in the developer portal — **New
+Application**, **Bot → Reset Token**, and **Message Content Intent ON** — and
+`bot-discord` does everything after that:
+
+```sh
+bun "$(hoobot path skills)/bot-discord/scripts/discord-app.ts" write hee --token <token> --guild <guild-id>
+bun "$(hoobot path skills)/bot-discord/scripts/discord-app.ts" avatar hee --icon /tmp/hee.png
+bun "$(hoobot path skills)/bot-discord/scripts/discord-app.ts" verify hee
+```
+
+`write` saves the token and prints the **invite URL** with every permission
+the bot needs already in it, so being added to a server is opening one link
+rather than ticking fifteen boxes. `avatar` sets the bot's icon through the
+API, because a bot may change its own avatar.
+
+A Discord bot's id **is** its application id, and it is in the first segment
+of the token, so `PEER_BOT_IDS` never has to be guessed:
+
+```sh
+bun "$(hoobot path skills)/bot-discord/scripts/discord-app.ts" id hee
+bun "$(hoobot path skills)/bot-discord/scripts/discord-app.ts" peers hee   # both directions
+```
+
+Unlike Slack's, that id never changes — a rename or a token reset does not
+move it — so `peer-sync.ts`'s re-resolve-everything dance is only needed on
+the Slack side. `PEER_BOT_IDS` holds both chats in one list: Discord ids are
+digits, Slack ids start with `U`.
+
+Message Content Intent is the thing people miss. It is privileged, off by
+default, and with it off the bot receives mentions with **empty text** — so
+it sees being called and has nothing to answer.
+
+See the `bot-discord` and `discord-bot-create` skills.
 
 ## Health
 

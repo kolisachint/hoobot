@@ -59,6 +59,11 @@ if (!existsSync(skillsDir)) {
   for (const rel of ["bot-slack/scripts/paths.sh", "bot-slack/scripts/slack-pty.sh", "bot-slack/scripts/peer-sync.ts", "bot-selftest/scripts/bot-selftest.sh"]) {
     need(`skills/${rel}`, "a bundled script the bot-slack and bot-selftest skills run");
   }
+  // Discord has no CLI, so bot-discord's script is the only thing that can
+  // make a Discord bot; a package without it is a package where creating one
+  // on a fresh machine ends in a portal visit for everything.
+  need("skills/bot-discord/SKILL.md", "the bot-discord skill");
+  need("skills/bot-discord/scripts/discord-app.ts", "a script the bot-discord and discord-bot-create skills run");
 
   // A script seeded 0644 works right up until someone runs it directly.
   for (const f of packed.files) {

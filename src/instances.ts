@@ -228,7 +228,7 @@ export const FIELDS: Field[] = [
   },
 
   { key: "ALLOWED_USER_IDS", label: "Allowed users", kind: "list", group: "People", hint: "Everyone else is ignored. Discord IDs are digits, Slack member IDs look like U0123ABCD.", placeholder: "758289752645959720" },
-  { key: "PEER_BOT_IDS", label: "Companion bots", kind: "list", group: "People", hint: "Slack member IDs of bots allowed to mention this one. Empty = bots are ignored." },
+  { key: "PEER_BOT_IDS", label: "Companion bots", kind: "list", group: "People", hint: "Discord application ids (digits) and Slack member IDs (U0123ABCD), one list for both chats. Empty = bots are ignored." },
   { key: "PEER_TURNS", label: "Turns per thread", kind: "number", group: "People", min: 1, max: 20, hint: "Answers a companion bot gets before asking you for more." },
   { key: "GUILD_ID", label: "Discord server ID", kind: "text", group: "People", hint: "Leave empty to answer in any server the bot is in." },
   { key: "CHANNEL_IDS", label: "Only these channels", kind: "list", group: "People", hint: "Empty = every channel." },

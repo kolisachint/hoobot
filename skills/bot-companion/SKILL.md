@@ -40,12 +40,16 @@ exists, it lives in the wrong folder. That is the first thing to check.
 3. **Runtime folder + `.env`.** Copy `$(HOO_PATHS runtime)/hoo/.env` as the
    template, then set `HEALTH_PORT` to the next free one (8788, 8789…),
    `HOO_INSTANCE=<name>`, `LINKS_FILE` to its own file, and give it its own
-   `HOO_AVATAR_SEED`. Leave `PEER_BOT_IDS` for step 5.
+   `HOO_AVATAR_SEED`. Set `HOO_SURFACES` to the chats it is on (`slack`,
+   `discord`, or both). Leave `PEER_BOT_IDS` for step 5.
 4. **Shared workdir.** Set `HOO_WORKDIR` to the *same* folder the other bot
    uses. That is what makes "add a skill and both of you have it" true.
-5. **Peer wiring, both ways.** Get each ID with
-   `curl -s -H "Authorization: Bearer $(grep '^SLACK_BOT_TOKEN=' <env> | cut -d= -f2-)" https://slack.com/api/auth.test | grep user_id`.
-   Put each bot's ID in the other's `PEER_BOT_IDS`.
+5. **Peer wiring, both ways, both chats.** Slack: `peer-sync.ts` resolves
+   every id from each bot's own token, which is better than reading a file,
+   because a Slack id changes whenever the app is recreated. Discord:
+   `bun "$(HOO_PATHS skills)/bot-discord/scripts/discord-app.ts" id <bot>`,
+   which decodes the application id out of the token — Discord ids never
+   change, so nothing has to be re-resolved later.
 6. **Verify** — `scripts/bot-selftest.sh <name>` from this skill's folder.
    It is the gate; do not report success without it passing.
 7. **Restart** with the manager (`hoobot manager`, Restart) or
@@ -57,6 +61,10 @@ exists, it lives in the wrong folder. That is the first thing to check.
 - `Slack: peer bots @x` missing from the log → `PEER_BOT_IDS` empty, or the
   ID isn't a bot (`auth.test` says `is_bot:false` → a person; fix the list).
 - `PEER_BOT_IDS: <id> is not a bot` in the log → same.
+- `Discord: PEER_BOT_IDS lists no Discord bot` → the mesh is Slack-only; add
+  the other bot's application id (`discord-app.ts id <bot>`). Bots that
+  answer each other on Slack and not on Discord is the usual reason a Discord
+  companion "doesn't work" when Slack does.
 - Bot answers once then goes quiet → turn budget spent. Raise `PEER_TURNS`
   or let an allowed user click Yes.
 - Both bots silent after any edit → they didn't restart; `PEER_BOT_IDS` is
@@ -76,3 +84,9 @@ exists, it lives in the wrong folder. That is the first thing to check.
   anything. `users.conversations` with an empty list means never invited.
 - `ALLOWED_USER_IDS` is per bot; a person who can talk to hoo can't
   necessarily talk to hee.
+- A Discord bot's *user* name is not its instance folder (`hoo-bot` vs
+  `hoo`), so `bot-discord` and the self-test match an id to a bot by its
+  token, never by name.
+- Discord's **Message Content Intent** is off by default. With it off the bot
+  receives mentions with empty text and answers nothing, and nothing
+  scriptable can see or change it.
