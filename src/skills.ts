@@ -168,6 +168,7 @@ export function hoobotPaths(workdir?: string): Record<string, string> {
     "runtime-script": join(pkg, "scripts", "runtime.sh"),
     selftest: join(skills, "bot-selftest", "scripts", "bot-selftest.sh"),
     "avatar-png": join(skills, "bot-avatar", "scripts", "avatar-png.ts"),
+    worktree: join(skills, "git-worktrees", "scripts", "worktree.sh"),
   };
 }
 
