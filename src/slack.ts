@@ -19,6 +19,7 @@ import { handleCall, helpText } from "./core.ts";
 import { fromMrkdwn, toMrkdwn as mrkdwn } from "./mrkdwn.ts";
 import { linkMentions, TurnBudget } from "./peers.ts";
 import type { AttachmentLike, Fetcher } from "./inbound.ts";
+import { log, error, warn } from "./log.ts";
 
 const HELP = helpText("Slack", "a menu");
 
@@ -171,11 +172,11 @@ export class Slack {
       if (id === this.botUserId) continue;
       const info: any = await this.web.users.info({ user: id }).catch(() => null);
       if (!info) {
-        console.error(`PEER_BOT_IDS: can't look up ${id}`);
+        error(`PEER_BOT_IDS: can't look up ${id}`);
         continue;
       }
       if (!info.user?.is_bot) {
-        console.error(`PEER_BOT_IDS: ${id} is ${info.user?.name ?? "not a bot"}, not a bot; ignoring it as a peer.`);
+        error(`PEER_BOT_IDS: ${id} is ${info.user?.name ?? "not a bot"}, not a bot; ignoring it as a peer.`);
         continue;
       }
       this.peerBotIds.add(id);
@@ -189,8 +190,8 @@ export class Slack {
     // until an event has been handled, so the first `connected` does nothing.
     this.socket.on("connected", () => void this.catchUp());
     await this.socket.start();
-    console.log(`Slack: logged in as @${auth.user} in ${auth.team}`);
-    if (this.peers.size) console.log(`Slack: peer bots ${[...new Set(this.peers.keys())].map((n) => "@" + n).join(", ")} (${config.peerTurns} turns per thread)`);
+    log(`Slack: logged in as @${auth.user} in ${auth.team}`);
+    if (this.peers.size) log(`Slack: peer bots ${[...new Set(this.peers.keys())].map((n) => "@" + n).join(", ")} (${config.peerTurns} turns per thread)`);
   }
 
   async stop(): Promise<void> {
@@ -200,7 +201,9 @@ export class Slack {
   // ── Events ─────────────────────────────────────────────────────────────────
 
   private async onEvent({ ack, event, envelope_id }: { ack: () => Promise<void>; event: any; envelope_id: string }) {
-    await ack().catch(() => {});
+    // A failed ack means Slack redelivers, so it is worth knowing about: the
+    // handler may run twice and the user may see a duplicate answer.
+    await ack().catch((err) => warn(`slack ack failed for ${envelope_id}: ${err instanceof Error ? err.message : String(err)}`));
     if (this.seen.has(envelope_id) || this.seen.has(`${event?.channel}:${event?.ts}`)) return;
     this.remember(envelope_id);
     this.remember(`${event?.channel}:${event?.ts}`);
@@ -211,7 +214,7 @@ export class Slack {
     try {
       await this.onMessage(event);
     } catch (err) {
-      console.error("slack message handler failed", err);
+      error("slack message handler failed", err);
       await this.web.chat
         .postMessage({
           channel: event.channel,
@@ -243,7 +246,7 @@ export class Slack {
 
     const text = stripMention(event.text ?? "", this.botUserId);
     if (text === null) return;
-    console.log(`[slack] ${event.user} in ${channel}: ${String(event.text ?? "").slice(0, 80)}`);
+    log(`[slack] ${event.user} in ${channel}: ${String(event.text ?? "").slice(0, 80)}`);
 
     const threadTs: string | undefined = event.thread_ts && event.thread_ts !== event.ts ? event.thread_ts : undefined;
     if (threadTs) this.threads.add(slackSpaceId(channel, threadTs));
@@ -398,7 +401,7 @@ export class Slack {
     try {
       const missed = await this.missed();
       if (!missed.length) return;
-      console.log(`[slack] caught up: ${missed.length} mention(s) missed while the socket was down`);
+      log(`[slack] caught up: ${missed.length} mention(s) missed while the socket was down`);
       for (const { channel, channelType, message } of missed) {
         // Marked before the answer, not after: a mention is answered once,
         // however long the answer takes.
@@ -406,11 +409,11 @@ export class Slack {
         try {
           await this.onMessage({ ...message, channel, channel_type: channelType });
         } catch (err) {
-          console.log(`[slack] caught-up message ${channel}:${message.ts} failed: ${err}`);
+          log(`[slack] caught-up message ${channel}:${message.ts} failed: ${err}`);
         }
       }
     } catch (err) {
-      console.log(`[slack] catch-up failed: ${err}`);
+      log(`[slack] catch-up failed: ${err}`);
     } finally {
       this.catchingUp = false;
     }
