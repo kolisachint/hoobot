@@ -7,6 +7,7 @@
  * and the real `codex app-server` alike.
  */
 import { config } from "./config.ts";
+import { error, log, warn } from "./log.ts";
 import type { ChatSpace, Choice, Posted } from "./chat.ts";
 import { idOrder } from "./context.ts";
 import { code, describeTool, splitMessage, truncate } from "./format.ts";
@@ -43,6 +44,11 @@ export class ThreadSession {
   private answer: string | null = null;
   private typingTimer: ReturnType<typeof setInterval> | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Fires when a running turn has said nothing for too long. */
+  private stallTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When the running turn last reported anything, for `/healthz`. */
+  private turnStartedAt = 0;
+  private lastTurnEventAt = 0;
   private approvals = new Map<RequestId, Approval>();
   /** The model the server reports for the thread. */
   private model: string | null = null;
@@ -81,6 +87,17 @@ export class ThreadSession {
     return this.turnId !== null;
   }
 
+  /** How long the running turn has gone without reporting anything. */
+  get turnStalledMs(): number {
+    if (!this.turnId || !this.lastTurnEventAt) return 0;
+    return Date.now() - this.lastTurnEventAt;
+  }
+
+  /** When the running turn began (epoch ms), or 0 when idle. */
+  get turnAgeMs(): number {
+    return this.turnId && this.turnStartedAt ? Date.now() - this.turnStartedAt : 0;
+  }
+
   /** Resume the linked thread, or start a new one. Idempotent. */
   private ensureThread(): Promise<void> {
     this.ready ??= (async () => {
@@ -94,7 +111,7 @@ export class ThreadSession {
           this.adopt(res);
           return;
         } catch (err) {
-          console.error(`[${this.thread.id}] resume ${link.threadId} failed; starting fresh`, err);
+          error(`[${this.thread.id}] resume ${link.threadId} failed; starting fresh`, err);
           await this.post(`Couldn't reopen the earlier conversation (${code(errorText(err))}). Starting a new one.`);
           this.seenId = null;
           this.wasLinked = false;
@@ -145,7 +162,7 @@ export class ThreadSession {
     this.model = res.model ?? null;
     // A turn still running on the server (e.g. after a bot restart).
     const running = (res.thread.turns ?? []).findLast?.((t: any) => t.status === "inProgress");
-    this.turnId = null;
+    this.clearTurn();
     if (running) this.beginTurn(running.id);
   }
 
@@ -205,10 +222,14 @@ export class ThreadSession {
 
   async newSession() {
     if (this.turnId && this.threadId) {
-      await this.client.request("turn/interrupt", { threadId: this.threadId, turnId: this.turnId }).catch(() => {});
+      // Not silent: a failed interrupt means the old turn keeps burning tokens
+      // while the user believes the conversation was reset.
+      await this.client
+        .request("turn/interrupt", { threadId: this.threadId, turnId: this.turnId })
+        .catch((err) => warn(`[${this.thread.id}] interrupt before reset failed: ${errorText(err)}`));
     }
     if (this.threadId) await this.client.request("thread/unsubscribe", { threadId: this.threadId }).catch(() => {});
-    this.turnId = null;
+    this.clearTurn();
     turnLog.end(this.workdir, this.linkKey);
     // The new conversation knows nothing: the next call reads the last 30 again.
     this.seenId = null;
@@ -327,29 +348,106 @@ export class ThreadSession {
   close() {
     if (this.closed) return;
     this.closed = true;
-    if (this.threadId) this.client.request("thread/unsubscribe", { threadId: this.threadId }).catch(() => {});
+    if (this.threadId) {
+      // Fire-and-forget, but not silent: unsubscribe failing means the server
+      // keeps pushing this thread's events at a client that has let go.
+      this.client
+        .request("thread/unsubscribe", { threadId: this.threadId })
+        .catch((err) => warn(`[${this.thread.id}] unsubscribe on close failed: ${errorText(err)}`));
+    }
     this.dispose();
   }
 
   // ── Output to chat ─────────────────────────────────────────────────────────
 
+  /**
+   * The turn is over, however it ended: completed, interrupted, or given up
+   * on. Every path that drops `turnId` goes through here, so the stall timer
+   * can never outlive the turn it was watching — which would fire later and
+   * clear a *different* turn's flag.
+   */
+  private clearTurn() {
+    this.turnId = null;
+    if (this.stallTimer) clearTimeout(this.stallTimer);
+    this.stallTimer = null;
+    this.lastTurnEventAt = 0;
+  }
+
   private beginTurn(turnId: string) {
     if (this.turnId === turnId) return;
-    this.turnId = turnId;
+    // Set last, and defensively: this flag is what "busy" means everywhere, so
+    // a throw between here and the end used to leave the session permanently
+    // busy — every later message queued behind a turn that never existed.
     turnLog.begin(this.workdir, this.linkKey);
     this.tools = [];
     this.progressMsg = null;
     this.live = { summary: new TurnSummary(), msg: null, at: 0 };
     this.answer = null;
-    this.startTyping();
+    try {
+      this.startTyping();
+    } catch (err) {
+      warn(`[${this.thread.id}] typing indicator failed to start: ${errorText(err)}`);
+    }
+    this.turnId = turnId;
+    this.turnStartedAt = Date.now();
+    this.lastTurnEventAt = Date.now();
+    this.armStallTimer();
   }
 
   private onNotification = (n: Notification) => {
     const p = n.params ?? {};
     if (p.threadId !== undefined && p.threadId !== this.threadId) return;
     if (n.method === "thread/started" && p.thread?.id !== this.threadId) return;
-    this.handleNotification(n).catch((err) => console.error(`[${this.thread.id}] event error`, err));
+    // Any event for our turn counts as progress, so a long but healthy turn
+    // is never mistaken for a wedged one.
+    if (this.turnId) {
+      this.lastTurnEventAt = Date.now();
+      this.armStallTimer();
+    }
+    this.handleNotification(n).catch((err) => error(`[${this.thread.id}] event error`, err));
   };
+
+  /**
+   * Give up on a turn that has stopped reporting.
+   *
+   * The request deadline in the client covers a call that gets no *reply*,
+   * but a turn is not one call: it answers `turn/start` immediately and then
+   * streams events. If the stream dies mid-turn, nothing ever times out, and
+   * because `turnId` is only cleared by `turn/completed`, the session stays
+   * busy forever — silently swallowing every later message in the thread.
+   * That was the morning's failure exactly.
+   *
+   * So the turn carries its own deadline, measured from the last event rather
+   * than the start: a genuinely long answer keeps resetting it, and only real
+   * silence trips it.
+   */
+  private armStallTimer() {
+    if (this.stallTimer) clearTimeout(this.stallTimer);
+    this.stallTimer = null;
+    if (!this.turnId) return;
+    this.stallTimer = setTimeout(() => void this.abandonStalledTurn(), config.turnStallMs);
+  }
+
+  private async abandonStalledTurn() {
+    const turn = this.turnId;
+    if (!turn) return;
+    const waited = Math.round(this.turnStalledMs / 1000);
+    error(`[${this.thread.id}] turn stalled: no event for ${waited}s, giving up on ${turn}`);
+    // Clear the busy flag first: everything below is best-effort, and a
+    // throw here would leave the session wedged all over again.
+    this.clearTurn();
+    turnLog.end(this.workdir, this.linkKey);
+    this.stopTyping();
+    this.caller = null;
+    this.answer = null;
+    await this.post(
+      `**Stopped waiting.** The model stopped responding after ${waited}s, so I gave up on that answer. ` +
+        "Send the message again and I'll pick it up from here.",
+    ).catch(() => {});
+    // Ask the server to stop burning tokens on a turn nobody is reading.
+    await this.client.request("turn/interrupt", { threadId: this.threadId, turnId: turn }, 10_000).catch(() => {});
+    this.touch();
+  }
 
   private async handleNotification({ method, params: p }: Notification) {
     switch (method) {
@@ -359,7 +457,7 @@ export class ThreadSession {
 
       case "turn/completed": {
         if (p.turn.id !== this.turnId) break;
-        this.turnId = null;
+        this.clearTurn();
         turnLog.end(this.workdir, this.linkKey);
         this.stopTyping();
         await this.flushProgress();
@@ -505,7 +603,7 @@ export class ThreadSession {
 
   private onRequest = (r: ServerRequest) => {
     if (r.params?.threadId !== this.threadId) return;
-    this.handleRequest(r).catch((err) => console.error(`[${this.thread.id}] request error`, err));
+    this.handleRequest(r).catch((err) => error(`[${this.thread.id}] request error`, err));
   };
 
   private async handleRequest(r: ServerRequest) {
@@ -590,11 +688,11 @@ export class ThreadSession {
         ? this.thread.send(text, opts)
         : this.thread.send(text, { ...opts, files }).catch(async (err: unknown) => {
             // e.g. over the upload limit: still post the text.
-            console.error(`[${this.thread.id}] upload failed`, err);
+            error(`[${this.thread.id}] upload failed`, err);
             await this.thread.send(text, opts);
             return this.thread.send(`-# Couldn't attach ${files.map((f) => code(f.name)).join(", ")}: ${errorText(err)}`);
           });
-    return this.enqueue(send).catch((err) => console.error(`[${this.thread.id}] send failed`, err));
+    return this.enqueue(send).catch((err) => error(`[${this.thread.id}] send failed`, err));
   }
 
   private enqueue<T>(fn: () => Promise<T>): Promise<T> {
@@ -605,8 +703,11 @@ export class ThreadSession {
 
   private startTyping() {
     if (this.typingTimer) return;
-    this.thread.sendTyping().catch(() => {});
-    this.typingTimer = setInterval(() => this.thread.sendTyping().catch(() => {}), 8000);
+    // The typing indicator is decoration: it must never be able to interrupt
+    // the turn bookkeeping, so every path into it is guarded.
+    const ping = () => this.thread.sendTyping?.().catch(() => {});
+    ping();
+    this.typingTimer = setInterval(ping, 8000);
   }
 
   private stopTyping() {
@@ -627,6 +728,7 @@ export class ThreadSession {
     turnLog.end(this.workdir, this.linkKey);
     clearInterval(this.progressTimer);
     if (this.idleTimer) clearTimeout(this.idleTimer);
+    if (this.stallTimer) clearTimeout(this.stallTimer);
     this.stopTyping();
     this.client.off("notification", this.onNotification);
     this.client.off("request", this.onRequest);
