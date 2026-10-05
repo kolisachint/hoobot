@@ -9,6 +9,7 @@
 import { EventEmitter } from "node:events";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
+import { log, error } from "./log.ts";
 
 export type RequestId = number | string;
 
@@ -29,17 +30,41 @@ interface Transport {
   close(): void;
 }
 
+/** Thrown when a call passed its deadline without an answer. */
+export class TimeoutError extends Error {
+  constructor(
+    readonly method: string,
+    readonly timeoutMs: number,
+  ) {
+    super(`app-server did not answer ${method} within ${timeoutMs < 1000 ? `${timeoutMs}ms` : `${Math.round(timeoutMs / 1000)}s`}`);
+  }
+}
+
 /**
  * Events: `notification` (Notification), `request` (ServerRequest),
  * `close` (reason: string).
  */
+type Pending = {
+  resolve: (v: any) => void;
+  reject: (e: Error) => void;
+  /** `reject` without the pending-map bookkeeping, for the timeout path. */
+  rawReject: (e: Error) => void;
+  timer?: ReturnType<typeof setTimeout>;
+  method: string;
+  startedAt: number;
+};
+
 export class CodexClient extends EventEmitter {
   private nextId = 1;
-  private pending = new Map<RequestId, { resolve: (v: any) => void; reject: (e: Error) => void }>();
+  private pending = new Map<RequestId, Pending>();
   private transport: Transport | null = null;
   private closed = false;
 
-  private constructor(readonly endpoint: string) {
+  private constructor(
+    readonly endpoint: string,
+    /** Deadline for a call with no explicit one. See `request`. */
+    readonly defaultTimeoutMs: number,
+  ) {
     super();
   }
 
@@ -51,36 +76,31 @@ export class CodexClient extends EventEmitter {
   static async connect(
     endpoint: string,
     clientInfo = { name: "hoobot", version: "0.1.0" },
-    options: { cwd?: string; initializeTimeoutMs?: number } = {},
+    options: { cwd?: string; initializeTimeoutMs?: number; requestTimeoutMs?: number } = {},
   ): Promise<CodexClient> {
-    const client = new CodexClient(endpoint);
+    const client = new CodexClient(endpoint, options.requestTimeoutMs ?? 120_000);
     await client.open(options.cwd);
     const timeoutMs = options.initializeTimeoutMs ?? 15_000;
-    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await Promise.race([
-        client.request("initialize", {
-          clientInfo,
-          capabilities: { experimentalApi: true },
-        }),
-        new Promise((_, reject) => {
-          timer = setTimeout(
-            () =>
-              reject(
-                new Error(
-                  `app-server at ${endpoint} did not answer initialize within ${timeoutMs / 1000}s. ` +
-                    "Does this hoocode build support `app-server`? Set HOOCODE_BIN or APP_SERVER in .env.",
-                ),
-              ),
-            timeoutMs,
+      // The deadline is passed to the call itself rather than raced against a
+      // separate timer: one timer, cleared in one place, so the pending entry
+      // cannot outlive a failed handshake.
+      await client.request(
+        "initialize",
+        { clientInfo, capabilities: { experimentalApi: true } },
+        timeoutMs,
+      ).catch((err) => {
+        if (err instanceof TimeoutError) {
+          throw new Error(
+            `app-server at ${endpoint} did not answer initialize within ${timeoutMs / 1000}s. ` +
+              "Does this hoocode build support `app-server`? Set HOOCODE_BIN or APP_SERVER in .env.",
           );
-        }),
-      ]);
+        }
+        throw err;
+      });
     } catch (err) {
       client.close();
       throw err;
-    } finally {
-      clearTimeout(timer);
     }
     client.notify("initialized");
     return client;
@@ -101,11 +121,54 @@ export class CodexClient extends EventEmitter {
     }
   }
 
-  request<T = any>(method: string, params?: unknown): Promise<T> {
+  /**
+   * A call, with a deadline.
+   *
+   * Every request used to wait forever: the reply settled it, or the
+   * connection closing did. A server that simply stopped answering — a
+   * wedged turn, a half-dead pipe — left the promise pending for good, and
+   * because callers serialise per chat space, that one pending promise
+   * blocked every later message in the thread behind it. The bot went quiet
+   * while still reporting healthy.
+   *
+   * So every call now carries a deadline and rejects with `TimeoutError`
+   * when it passes. `timeoutMs: 0` (or a negative number) opts out, for the
+   * rare call that is genuinely allowed to take as long as it takes.
+   */
+  request<T = any>(method: string, params?: unknown, timeoutMs?: number): Promise<T> {
     if (this.closed || !this.transport) return Promise.reject(new Error("app-server connection closed"));
     const id = this.nextId++;
+    const budget = timeoutMs ?? this.defaultTimeoutMs;
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      // `finish` is the single way a pending call ends — reply, timeout, or
+      // shutdown — so the timer is always cleared and the map never leaks.
+      const finish = (fn: (v: any) => void) => (v: any) => {
+        const waiter = this.pending.get(id);
+        if (!waiter) return; // already settled
+        clearTimeout(waiter.timer);
+        this.pending.delete(id);
+        fn(v);
+      };
+      const waiter: Pending = {
+        resolve: finish(resolve),
+        reject: finish((e: Error) => reject(e)),
+        rawReject: (e: Error) => reject(e),
+        method,
+        startedAt: Date.now(),
+      };
+      if (budget > 0) {
+        waiter.timer = setTimeout(() => {
+          // Drop the entry first, then reject through the *raw* reject: the
+          // stored one is wrapped by `finish`, which would look the id up
+          // again, find it already gone, and silently never settle.
+          if (!this.pending.delete(id)) return;
+          clearTimeout(waiter.timer);
+          // Loud, because this is the failure that used to be invisible.
+          error(`app-server call ${method} timed out after ${budget < 1000 ? `${budget}ms` : `${Math.round(budget / 1000)}s`}`);
+          waiter.rawReject(new TimeoutError(method, budget));
+        }, budget);
+      }
+      this.pending.set(id, waiter);
       this.transport!.send(params === undefined ? { id, method } : { id, method, params });
     });
   }
@@ -145,15 +208,27 @@ export class CodexClient extends EventEmitter {
     }
     const waiter = this.pending.get(msg?.id);
     if (!waiter) return;
-    this.pending.delete(msg.id);
+    // The stored resolve/reject clear the timer and drop the entry.
     if (msg.error) waiter.reject(new RpcError(msg.error.code ?? -1, msg.error.message ?? "error"));
     else waiter.resolve(msg.result);
+  }
+
+  /** Calls still waiting for a reply, with how long each has waited. */
+  inflight(): { method: string; waitedMs: number }[] {
+    const now = Date.now();
+    return [...this.pending.values()].map((w) => ({
+      method: w.method,
+      waitedMs: w.startedAt ? now - w.startedAt : 0,
+    }));
   }
 
   private shutdown(reason: string) {
     if (this.closed) return;
     this.closed = true;
-    for (const w of this.pending.values()) w.reject(new Error(`app-server connection closed: ${reason}`));
+    for (const w of this.pending.values()) {
+      clearTimeout(w.timer);
+      w.reject(new Error(`app-server connection closed: ${reason}`));
+    }
     this.pending.clear();
     this.emit("close", reason);
   }
@@ -197,7 +272,10 @@ function openStdio(
     if (process.env.DEBUG === "1") process.stderr.write(`[app-server] ${d}`);
   });
   child.on("exit", (code) => onClose(`app-server exited (${code})`));
-  child.on("error", (err) => onClose(err.message));
+  child.on("error", (err) => {
+    error(`app-server process error: ${err.message}`);
+    onClose(err.message);
+  });
   return {
     send: (m) => child.stdin.write(JSON.stringify(m) + "\n"),
     close: () => child.kill(),
