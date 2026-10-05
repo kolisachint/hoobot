@@ -14,6 +14,7 @@ import { code, describeTool, splitMessage, truncate } from "./format.ts";
 import { CodexClient, RpcError, userInput, type Notification, type RequestId, type ServerRequest } from "./codex-client.ts";
 import type { LinkStore } from "./links.ts";
 import { TurnSummary } from "./summary.ts";
+import { subagentLine } from "./subagents.ts";
 import {
   changedSince,
   claimChanged,
@@ -254,6 +255,10 @@ export class ThreadSession {
       `- Thread: ${code(this.threadId ?? "none")}`,
       `- Server: ${code(this.client.endpoint)}`,
     ];
+    // Only when this project has a dispatch ledger: a missing ledger means
+    // nothing is known, and "0 of 0" would read like a failure.
+    const subagents = subagentLine(this.workdir);
+    if (subagents) lines.push(`- ${subagents}`);
     await this.post(lines.join("\n"));
   }
 

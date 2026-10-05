@@ -10,8 +10,9 @@
  */
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
-import { config, surfaces } from "./config.ts";
+import { allWorkdirs, config, surfaces } from "./config.ts";
 import { error, log } from "./log.ts";
+import { subagentStats } from "./subagents.ts";
 
 const VERSION: string = (() => {
   try {
@@ -112,9 +113,14 @@ export function healthBody(state: HealthState, sessions: () => SessionStatus[] =
   // whoever is waiting on it, so it is reported here and the bot says itself
   // unhealthy until the session gives up on its own or recovers.
   const stuck = sessions().filter((s) => s.stuck);
+  // Subagent reliability from hoocode's dispatch ledger. `known: false` when
+  // there is no ledger yet, which is not the same as "nothing has ever
+  // worked" - a reader has to be able to tell those apart.
+  const subagents = subagentStats(config.workdir);
   return {
     ok: state.ok && stuck.length === 0,
     ...(stuck.length ? { stuckSessions: stuck.map((s) => s.key) } : {}),
+    ...(subagents.known ? { subagents } : {}),
     instance: state.instance,
     pid: process.pid,
     version: VERSION,
@@ -139,6 +145,10 @@ export function botsBody(state: HealthState, sessions: () => SessionStatus[]): R
     appServer: config.appServer || `stdio:${config.hoocodeBin} app-server`,
     model: config.model ?? null,
     approvals: config.approvals,
+    // One entry per folder the bot can work in: the ledger is per project, so
+    // a per-channel workspace has its own reliability and the primary one
+    // says nothing about it.
+    subagentsByWorkdir: Object.fromEntries(allWorkdirs().map((dir) => [dir, subagentStats(dir)])),
     allowedUserIds: [...config.allowedUserIds],
     peerBotIds: [...config.peerBotIds],
     channelIds: [...config.channelIds],
