@@ -101,9 +101,19 @@ print(d["user_id"] if d.get("ok") else "!"+str(d.get("error")))' 2>/dev/null)"
     esac
 
     # 6. companions wired both ways
-    peers="$(get PEER_BOT_IDS | tr ',' ' ')"
+    # Slack peers only. PEER_BOT_IDS is one list shared by both chats, and a
+    # Discord id looked up on Slack is not a dead token — it is simply the
+    # wrong chat's id, reported as "cannot verify it" and sending you off to
+    # re-auth a perfectly good token. The Discord branch below filters the
+    # same way; this filters the other half.
+    peers="$(get PEER_BOT_IDS | tr ',' '\n' | grep -E '^U' | tr '\n' ' ')"
     if [ -z "$peers" ]; then
-      warn "PEER_BOT_IDS empty — this bot ignores every other bot"
+      speers="$(get PEER_BOT_IDS | tr ',' ' ')"
+      if [ -z "$speers" ]; then
+        warn "PEER_BOT_IDS empty — this bot ignores every other bot"
+      else
+        warn "PEER_BOT_IDS lists no Slack peer on this bot (only Discord ids)"
+      fi
     else
       for pid in $peers; do
         # users.info needs a token; with a dead one every lookup fails, which
