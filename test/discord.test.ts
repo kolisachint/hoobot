@@ -216,7 +216,9 @@ test("answers: a reply doesn't ping, files ride along, and @peer becomes a menti
   expect(posted[1]).toEqual({
     content: "<@99> what do you think?",
     reply: { messageReference: "M1", failIfNotExists: false },
-    allowedMentions: { repliedUser: false },
+    // parse must stay explicit: Discord drops every mention when
+    // allowedMentions is supplied without it.
+    allowedMentions: { parse: ["users", "roles", "everyone"], repliedUser: false },
   });
 
   await space.send("here", { files: [{ attachment: "/tmp/a.png", name: "a.png" } as any] });
