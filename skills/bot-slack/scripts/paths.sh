@@ -64,6 +64,7 @@ _resolve() {
     skills) p="${HOO_WORKDIR:-$HOO_WORKDIR_DEFAULT}/.cortexcode/skills" ;;
     selftest) p="${HOO_WORKDIR:-$HOO_WORKDIR_DEFAULT}/.cortexcode/skills/bot-selftest/scripts/bot-selftest.sh" ;;
     avatar-png) p="${HOO_WORKDIR:-$HOO_WORKDIR_DEFAULT}/.cortexcode/skills/bot-avatar/scripts/avatar-png.ts" ;;
+    worktree) p="${HOO_WORKDIR:-$HOO_WORKDIR_DEFAULT}/.cortexcode/skills/git-worktrees/scripts/worktree.sh" ;;
     runtime-script) p="$(_package_dir)/scripts/runtime.sh" ;;
     manager) p="http://127.0.0.1:8790" ;;
     *) return 1 ;;
@@ -75,7 +76,7 @@ _resolve() {
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   key="${1:---list}"
   if [ "$key" = "--list" ]; then
-    for k in package runtime workdir skills selftest avatar-png runtime-script manager; do
+    for k in package runtime workdir skills selftest avatar-png worktree runtime-script manager; do
       printf '%s=%s\n' "$k" "$(_resolve "$k")"
     done
     exit 0
@@ -95,5 +96,6 @@ WORKDIR="$(_resolve workdir)"
 SKILLS="$(_resolve skills)"
 SELFTEST="$(_resolve selftest)"
 AVATAR_PNG="$(_resolve avatar-png)"
+WORKTREE="$(_resolve worktree)"
 RUNTIME_SCRIPT="$(_resolve runtime-script)"
 MANAGER="$(_resolve manager)"
