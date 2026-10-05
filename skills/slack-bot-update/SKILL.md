@@ -41,7 +41,7 @@ HOO_PATHS() { bash "${HOO_SKILLS:-${HOO_WORKDIR:-$HOME/.hoobot/runtime/shared/wo
 
 | Key | Note |
 |---|---|
-| `PEER_BOT_IDS` | Slack user IDs of bots allowed to mention this one. Read at startup. |
+| `PEER_BOT_IDS` | Ids of bots allowed to mention this one: Slack `U…` and Discord digits, one list for both chats. Read at startup. |
 | `PEER_TURNS` | Answers a peer gets per thread before asking a human. Default 2. |
 | `ALLOWED_USER_IDS` | Mixed Discord digits and Slack `U…` ids. Empty = won't start. |
 | `MODEL` | Per bot default; `!model` overrides per thread. **Never leave it empty to "use the default":** that default belongs to a subscription that can lapse, and the bot then sits busy forever on a model call that never answers — while `/healthz` still reports `ok`. Pin a model with working credentials. |

@@ -7,6 +7,11 @@
 # "the bot's broken": wrong runtime folder, dead token, bot never invited,
 # companion not wired back, port taken by someone else, bot running from a
 # checkout instead of the published build.
+#
+# Both chats are checked, and only the ones the bot has tokens for: a Slack
+# bot is not asked about Discord. A Discord id and a Slack member id share one
+# `PEER_BOT_IDS` list, so each surface checks the peers *it* can answer — a
+# `U…` id asked of Discord comes back 400 and reads like a broken wiring.
 set -uo pipefail
 
 RUNTIME="${HOOBOT_RUNTIME_DIR:-$HOME/.hoobot/runtime}"
@@ -128,7 +133,102 @@ EOF
     fi
   fi
 
-  # 7. health
+  # 7. Discord
+  dtoken="$(get DISCORD_TOKEN)"
+  if [ -z "$dtoken" ]; then
+    warn "no Discord token yet"
+  else
+    me="$(curl -s --max-time 10 -H "Authorization: Bot $dtoken" https://discord.com/api/v10/users/@me)"
+    read -r dok did dname dbot <<EOF
+$(printf '%s' "$me" | python3 -c 'import json,sys
+try: d=json.load(sys.stdin)
+except Exception: print("!unparseable"); raise SystemExit
+if d.get("id"): print("true", d["id"], d.get("username","?"), str(d.get("bot",False)).lower())
+else: print("!"+str(d.get("message") or d.get("error") or "no answer"))' 2>/dev/null)
+EOF
+    case "$dok" in
+      '!'*) case "${dok#!}" in
+             Unauthorized|401|"401 Unauthorized")
+               fail "Discord token dead: ${dok#!} — it was reset in the portal or the app was deleted. Only the user can mint a new one (see discord-bot-create)." ;;
+             *) fail "users/@me: ${dok#!}" ;;
+           esac ;;
+      *)   pass "token live, ${dname} (${did})"
+           # The gateway is the live connection; a bot that cannot open one
+           # is connected-looking in the manager and dead to everyone else.
+           gw="$(curl -s --max-time 10 -H "Authorization: Bot $dtoken" https://discord.com/api/v10/gateway/bot | python3 -c 'import json,sys
+try: d=json.load(sys.stdin); print("ok" if d.get("url") else "!")
+except Exception: print("!unparseable")' 2>/dev/null)"
+           [ "$gw" = "ok" ] && pass "gateway reachable" || fail "gateway not reachable — the bot will not receive anything"
+
+           # 7b. in a server?
+           guild_id="$(get GUILD_ID)"
+           guilds="$(curl -s --max-time 10 -H "Authorization: Bot $dtoken" https://discord.com/api/v10/users/@me/guilds | python3 -c 'import json,sys
+try: print(" ".join(g["id"] for g in json.load(sys.stdin)))
+except Exception: print("")' 2>/dev/null)"
+           if [ -z "$guilds" ]; then
+             fail "in no servers — open the invite URL from: bun \"\$(hoobot path skills)/bot-discord/scripts/discord-app.ts\" invite ${name}"
+           elif [ -n "$guild_id" ]; then
+             case " $guilds " in
+               *" $guild_id "*) pass "in ${guild_id}, and GUILD_ID names it" ;;
+               *) fail "GUILD_ID=${guild_id} but the bot is not in that server (it is in: ${guilds}) — it answers nowhere" ;;
+             esac
+           else
+             pass "in $(echo "$guilds" | wc -w | tr -d ' ') server(s)"
+           fi
+
+           # 7c. peers this surface can answer. Discord ids are digits;
+           # Slack's start with U and are the other chat's business.
+           dpeers="$(get PEER_BOT_IDS | tr ',' '\n' | grep -E '^[0-9]+$' || true)"
+           if [ -z "$dpeers" ]; then
+             warn "PEER_BOT_IDS lists no Discord bot — this bot ignores every other bot on Discord"
+           else
+             for pid in $dpeers; do
+               [ "$pid" = "$did" ] && continue
+               info="$(curl -s --max-time 10 -H "Authorization: Bot $dtoken" "https://discord.com/api/v10/users/${pid}")"
+               read -r pok pname pbot <<EOF
+$(printf '%s' "$info" | python3 -c 'import json,sys
+try: d=json.load(sys.stdin)
+except Exception: print("!unparseable"); raise SystemExit
+print("true", d.get("username","?"), str(d.get("bot",False)).lower()) if d.get("id") else print("!"+str(d.get("message") or "unknown"))' 2>/dev/null)
+EOF
+               if [ "$pok" != "true" ]; then
+                 fail "peer ${pid}: Discord cannot look it up (${pok#!}) — stale id, or the app was deleted"
+                 continue
+               fi
+               [ "$pbot" = "true" ] || { fail "${pname} (${pid}) is a person, not a bot — remove from PEER_BOT_IDS"; continue; }
+               pass "peer @${pname} (${pid})"
+               # The peer's Discord username is not its instance folder
+               # ("hoo-bot" vs "hoo"), so match on which token is this id.
+               owner=""
+               for cand in "$RUNTIME"/*/; do
+                 cand="${cand%/}"
+                 case "$(basename "$cand")" in shared|manager|workspace|node_modules|logs|slack) continue;; esac
+                 ct="$(sed -n 's/^[[:space:]]*DISCORD_TOKEN=\(.*\)/\1/p' "$cand/.env" 2>/dev/null | tail -1 | tr -d '"'"'"'')"
+                 [ -n "$ct" ] || continue
+                 seg="$(printf '%s' "$ct" | cut -d. -f1)"
+                 # base64url, unpadded: BSD base64 silently drops the last
+                 # byte without the '=' padding, so the id comes back one
+                 # digit short and matches nothing.
+                 pad=$(( (4 - ${#seg} % 4) % 4 ))
+                 while [ "$pad" -gt 0 ]; do seg="${seg}="; pad=$((pad - 1)); done
+                 decoded="$(printf '%s' "$seg" | tr '_-' '/+' | base64 -d 2>/dev/null)"
+                 [ "$decoded" = "$pid" ] && { owner="$(basename "$cand")"; break; }
+               done
+               if [ -z "$owner" ]; then
+                 warn "no bot in $RUNTIME has the Discord id ${pid} — nothing to check the back-link against"
+               else
+                 # Commas on both ends so the first and last id both match `,id,`.
+                 back="$(sed -n 's/^[[:space:]]*PEER_BOT_IDS=\(.*\)/\1/p' "$RUNTIME/$owner/.env" | tail -1 | tr ',' '\n' | grep -E '^[0-9]+$' | sed 's/^/,/' | sed 's/$/,/' | tr -d '\n')"
+                 case "$back" in *",${did},"*) pass "@${owner} lists us back (${did})" ;;
+                   *) fail "@${owner} does not list ${did} in PEER_BOT_IDS — one-way peers never answer each other" ;;
+                 esac
+               fi
+             done
+           fi ;;
+    esac
+  fi
+
+  # 8. health
   port="$(get HEALTH_PORT)"; port="${port:-8787}"
   if [ "$port" != "off" ] && health="$(curl -sf --max-time 5 "http://127.0.0.1:${port}/healthz" 2>/dev/null)"; then
     echo "$health" | python3 -c '
@@ -144,7 +244,7 @@ for s in d.get("surfaces") or []:
     warn "no answer on http://127.0.0.1:${port}/healthz"
   fi
 
-  # 8. shared workdir
+  # 9. shared workdir
   wd="$(get HOO_WORKDIR)"
   if [ -n "$wd" ]; then
     [ -d "$wd" ] && pass "workdir $wd" || fail "HOO_WORKDIR $wd doesn't exist"

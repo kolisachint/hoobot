@@ -1,6 +1,6 @@
 ---
 name: hoobot-health-report
-description: Check the bots, the manager and the Slack apps, then tell the user in one short message what is wrong and what only they can do about it. Use when the user asks "how are the bots", "is anything broken", "check the bots", on a slow or quiet bot, before a restart, or proactively when idle and something needs the user. Also use to hand back a list of fixes after any bot change.
+description: Check the bots, the manager and their Slack and Discord apps, then tell the user in one short message what is wrong and what only they can do about it. Use when the user asks "how are the bots", "is anything broken", "check the bots", on a slow or quiet bot, before a restart, or proactively when idle and something needs the user. Also use to hand back a list of fixes after any bot change.
 ---
 
 # Health report
@@ -31,14 +31,17 @@ Say it in two groups, and never pad the first with the second.
 
 **Only the user** (a decision, not a limitation — everything mechanical is
 ours to do):
-- Which channel the bot should work in. It joins that one itself.
-- The first mention, because only a person types in Slack.
+- Which channel (Slack) or which server (Discord) the bot should work in.
+- The first mention, because only a person types it.
+- Discord's application and its bot token, and Message Content Intent — the
+  portal, every time, because Discord has no CLI. See `discord-bot-create`.
 
 `slack login` is only theirs if the CLI is not logged in.
 
-Everything else we do ourselves: creating the app, changing its scopes,
-reinstalling it, uploading its icon, and fetching both tokens — see
-`bot-slack`.
+Everything else we do ourselves: creating the Slack app, changing its scopes,
+reinstalling it, uploading its icon, fetching both tokens (`bot-slack`), and
+everything on Discord after the portal step — token, icon, invite URL with
+the right permissions, `PEER_BOT_IDS` (`bot-discord`).
 
 **Us** (just do it, then report it done):
 - `.env` keys, ports, peer wiring, workdirs, restarts, avatar seeds.
@@ -48,10 +51,15 @@ reinstalling it, uploading its icon, and fetching both tokens — see
 ## When to reach out unprompted
 
 Idle, and one of these is true:
-- A bot's Slack token is dead, or a surface isn't `connected` for more than
-  a few minutes. Silence looks exactly like "nobody is talking to me".
+- A bot's Slack or Discord token is dead, or a surface isn't `connected` for
+  more than a few minutes. Silence looks exactly like "nobody is talking to
+  me".
+- A Discord bot that is in no server, or whose `GUILD_ID` names a server it
+  is not in — it answers nowhere, and looks alive.
+- A Discord bot receiving mentions but never answering: that is Message
+  Content Intent being off, and it is the user's switch.
 - A bot is missing from the manager, or the manager isn't running.
-- A peer is wired one-way.
+- A peer is wired one-way, or wired on Slack and not on Discord.
 - A `.env` references a path that doesn't exist.
 
 Do **not** reach out about: a bot being idle, a thread timing out, a build

@@ -82,12 +82,13 @@ Two consequences worth knowing before you touch them:
   `.generated.json` and leaves a changed file alone. Add to `skills/`, or
   put it somewhere else — not over the top.
 
-## Bot ids are not stable
+## Bot ids are not stable — but Discord's are
 
 A bot's Slack user id changes every time its app is recreated. After any
 `create`, `tokens`, or rename, rewire the mesh rather than editing
-`PEER_BOT_IDS`. (A Discord bot's user id is its application id and doesn't
-change, so the mesh only has to be rewired when the Slack side does.)
+`PEER_BOT_IDS`. (A Discord bot's user id is its application id, is in the
+first segment of its token and doesn't change, so the Slack side is the only
+one that has to be rewired.)
 
 ```sh
 bun "$(…/skills/bot-slack/scripts/peer-sync.ts)" --dry-run
@@ -105,6 +106,12 @@ the Discord surface end to end without a token: it drives the real message
 path against `test/fixtures/echo-app-server.ts`, a stand-in app-server that
 answers a turn with whatever the prompt asked for. `bun test/live.ts` is the
 one that needs a real Discord app.
+
+The two chats are set up by different skills because Discord has no CLI and
+Slack has a good one: `bot-slack`/`slack-bot-create` make a Slack app
+unattended, while `bot-discord`/`discord-bot-create` start at the developer
+portal and do everything after it. Don't try to make Discord unattended —
+the portal is the platform's shape, not an oversight to code around.
 
 ## Other notes
 
