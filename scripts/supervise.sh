@@ -70,6 +70,23 @@ RESERVED="shared manager workspace node_modules logs slack"
 
 HOOBOT_BIN="$(command -v hoobot || true)"
 BUN="$(command -v bun || true)"
+
+# Where bun keeps its global installs, worked out from where `hoobot` actually
+# is rather than assumed. Bun picks ~/.bun when that directory exists and
+# ~/.local/share/bun otherwise, so on a machine with both, `bun add -g` writes
+# to one while the `hoobot` on PATH comes from the other. The symptom is nasty
+# and silent: `runtime.sh` reports a successful upgrade, the supervisor
+# restarts the bot, and the bot is still the old version — which looks exactly
+# like the release not having happened.
+#
+# The tell is that a bun global install keeps `bun` beside `hoobot` in the
+# same bin/, so that directory identifies the install unambiguously. Anything
+# else (an npm shim, say) is left alone rather than guessed at.
+BUN_INSTALL_DIR=""
+if [ -n "$HOOBOT_BIN" ]; then
+  _hb_bin="$(dirname "$HOOBOT_BIN")"
+  [ -x "$_hb_bin/bun" ] && BUN_INSTALL_DIR="$(dirname "$_hb_bin")"
+fi
 NODE_DIR="$(dirname "$(command -v node || echo /usr/local/bin/node)")"
 SERVICE_PATH="$REPO:$NODE_DIR:$(dirname "${BUN:-/usr/local/bin/bun}"):$HOME/.local/share/bun/bin:$HOME/.hoocode/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
@@ -311,6 +328,10 @@ write_plist() {
   <dict>
     <key>PATH</key><string>$SERVICE_PATH</string>
     <key>HOME</key><string>$HOME</string>
+    <!-- Set only when a bun install was identified above, so a global
+         install upgrades the same tree the bot is started from. An empty
+         value is worse than none: bun reads it as a relative path. -->
+    ${BUN_INSTALL_DIR:+<key>BUN_INSTALL</key><string>$BUN_INSTALL_DIR</string>}
     <key>HOOBOT_RUNTIME_DIR</key><string>$RUNTIME</string>
     <key>RUN_FROM_NPM</key><string>$RUN_FROM_NPM</string>
     <key>MANAGER_PORT</key><string>$MANAGER_PORT</string>
