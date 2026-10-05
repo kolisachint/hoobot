@@ -212,7 +212,11 @@ that restarted everything would quietly undo it. `start <name>` writes the
 marker and `stop <name>` removes it, so a bot you stopped from the browser
 stays stopped. Knobs, all optional: `HOOBOT_INTERVAL` (check every N seconds,
 default 30), `HOOBOT_FAILS` (unhealthy checks before a restart, default 2),
-`HOOBOT_COOLDOWN` (seconds between attempts at one bot, default 120),
+`HOOBOT_COOLDOWN` (base seconds between attempts at one bot, default 120 —
+it doubles on each further failure up to `HOOBOT_BACKOFF_MAX`, default 1800),
+`HOOBOT_LOOP_MAX` (failed starts inside `HOOBOT_LOOP_WINDOW`, default 5 in
+900s, after which it stops retrying and says so in its log rather than
+relaunching a broken bot all afternoon),
 `MANAGER_PORT`, `HOOBOT_RUNTIME_DIR`, and `RUN_FROM_NPM` (default 1, so the
 published build is what answers in Slack).
 
@@ -399,6 +403,22 @@ curl -s localhost:8787/healthz   # ok, uptime, pid, surfaces, last message
 curl -s localhost:8787/api/bots  # + work folders, links file, live sessions
 ```
 
+`ok` is not only liveness. A turn that has outrun `TURN_STUCK_MINUTES` is a
+real outage for whoever is waiting on it, so `/healthz` reports `ok:false` and
+lists the session in `stuckSessions` — which is the signal the supervisor acts
+on. `/api/bots` keeps reporting `ok:true` so the manager page still loads;
+its `sessions` carry `turnAgeMs`, `turnStalledMs` and `stuck`.
+
+### When a turn wedges
+
+A turn is acknowledged at once and then streams events, so the per-call
+deadline (`REQUEST_TIMEOUT_SECONDS`) never sees it. A separate watchdog
+measures from the **last event**, not the start: a long answer that is still
+making progress is never cut off, and only real silence trips it. When it
+does, the bot says so in the thread, clears its busy flag, and asks the
+server to interrupt — so a wedged turn costs one message instead of the whole
+conversation.
+
 ## Using it
 
 Every channel and every thread is a shared space where people and the bot
@@ -514,7 +534,8 @@ the thread; the first answer wins and the others see it resolved.
 | `src/attachments.ts` | Picks written files to attach to the answer |
 | `src/inbound.ts` | Saves files sent on Discord or Slack into the work folder for the prompt |
 | `src/format.ts` | Splits long replies to fit the chat's message limit |
-| `src/health.ts` | `/healthz` and `/api/bots` on 127.0.0.1: liveness, config, live sessions |
+| `src/health.ts` | `/healthz` and `/api/bots` on 127.0.0.1: liveness, config, live sessions, stuck turns |
+| `src/log.ts` | Timestamped `log`/`warn`/`error`, so every line says when it happened |
 | `src/cli.ts` | The `hoobot` command: the bot, or `hoobot manager [--open]` |
 | `src/manager.ts` | The bot manager: its API, and the page from `web/` on 127.0.0.1:8790 |
 | `src/instances.ts` | `runtime/<name>/.env` read/write, list, create, delete; the fields the UI shows |

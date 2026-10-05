@@ -4,6 +4,10 @@ import { EventEmitter } from "node:events";
 
 process.env.DISCORD_TOKEN ??= "x";
 process.env.ALLOWED_USER_IDS ??= "1";
+// Pinned, not defaulted: `??=` would let an ambient MODEL from the shell (or
+// the developer's .env) leak in and decide what the footers under test say,
+// so the suite passed or failed depending on where it was run.
+process.env.MODEL = "";
 const { ThreadSession } = await import("../src/session.ts");
 const { LinkStore } = await import("../src/links.ts");
 const { config } = await import("../src/config.ts");

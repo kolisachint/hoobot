@@ -15,6 +15,7 @@
  * Structural types only, so tests can pass plain objects for Discord ones.
  */
 import { truncate } from "./format.ts";
+import { error } from "./log.ts";
 
 export const CONTEXT_LIMIT = 30;
 /** Keeps a few huge pastes from filling the model's context. */
@@ -108,7 +109,7 @@ export async function fetchHistory(
       .filter((m): m is ContextMessage => m !== null);
     return selectSince(items, opts.since, opts.limit);
   } catch (err) {
-    console.error(`Can't read history in ${channel.id} (needs Read Message History): ${err instanceof Error ? err.message : String(err)}`);
+    error(`Can't read history in ${channel.id} (needs Read Message History): ${err instanceof Error ? err.message : String(err)}`);
     return [];
   }
 }

@@ -42,7 +42,7 @@
     "manager": "bun src/cli.ts manager",
     "dev": "bun --watch src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test test/skills.test.ts test/mrkdwn.test.ts test/discord.test.ts test/slack.test.ts test/format.test.ts test/codex-client.test.ts test/summary.test.ts test/session.test.ts test/config.test.ts test/context.test.ts test/attachments.test.ts test/inbound.test.ts test/peers.test.ts test/health.test.ts test/avatar.test.ts test/instances.test.ts test/manager.test.ts test/power.test.ts test/discord-app.test.ts",
+    "test": "bun test test/skills.test.ts test/mrkdwn.test.ts test/discord.test.ts test/slack.test.ts test/format.test.ts test/codex-client.test.ts test/summary.test.ts test/session.test.ts test/config.test.ts test/context.test.ts test/attachments.test.ts test/inbound.test.ts test/peers.test.ts test/health.test.ts test/avatar.test.ts test/instances.test.ts test/manager.test.ts test/power.test.ts test/discord-app.test.ts test/resilience.test.ts",
     "check": "bun run typecheck && bun run test && bun run verify:pack",
     "verify:pack": "bun scripts/verify-pack.ts"
   }
