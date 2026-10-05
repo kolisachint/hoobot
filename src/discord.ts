@@ -159,9 +159,16 @@ export function discordSpace(channel: WorkChannel, link: (text: string) => strin
       return posted(
         await channel.send({
           content: link(text),
-          // A reply that doesn't ping; a plain send if that message is gone.
+          // A reply that doesn't ping the person replied to; a plain send if
+          // that message is gone. `parse` is explicit: supplying
+          // allowedMentions replaces Discord's default parse list, so leaving
+          // it out makes every @peer in the text inert and the receiving bot
+          // never sees the mention.
           ...(opts.replyTo
-            ? { reply: { messageReference: opts.replyTo, failIfNotExists: false }, allowedMentions: { repliedUser: false } }
+            ? {
+                reply: { messageReference: opts.replyTo, failIfNotExists: false },
+                allowedMentions: { parse: ["users", "roles", "everyone"], repliedUser: false },
+              }
             : {}),
           ...(files.length ? { files } : {}),
         }),
