@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
 process.env.DISCORD_TOKEN ??= "x";
 process.env.SLACK_BOT_TOKEN ??= "xoxb-x";
@@ -168,4 +171,30 @@ test("a taken health port is reported loudly rather than silently dropped", () =
   const said = seen.join("\n");
   expect(said).toContain(String(port));
   expect(said).toContain("restart");
+});
+
+test("healthz reports subagent reliability from the dispatch ledger", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "hoobot-health-subagents-"));
+  const workdir = config.workdir;
+  try {
+    const path = join(dir, ".cortexcode", "dispatch", "ledger.jsonl");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(
+      path,
+      [
+        JSON.stringify({ ts: Date.now(), task_id: "d1", agent_type: "explore", status: "complete", ok: true, duration_ms: 1000 }),
+        JSON.stringify({ ts: Date.now(), task_id: "d2", agent_type: "plan", status: "timeout", ok: false, duration_ms: 600000 }),
+      ].join("\n"),
+    );
+    Object.assign(config, { workdir: dir });
+    const body = healthBody(new HealthState("test-Instance"));
+    expect(body.subagents).toMatchObject({ known: true, attempts: 2, usable: 1 });
+    // No ledger at all: the key is absent rather than a zero that reads like
+    // "every subagent has ever failed".
+    Object.assign(config, { workdir: join(dir, "empty") });
+    expect(healthBody(new HealthState("test-Instance")).subagents).toBeUndefined();
+  } finally {
+    Object.assign(config, { workdir });
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

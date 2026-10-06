@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { splitMessage } from "../src/format.ts";
+import { describeTool, splitMessage } from "../src/format.ts";
 
 test("short text is one chunk", () => {
   expect(splitMessage("hello")).toEqual(["hello"]);
@@ -24,4 +24,13 @@ test("code fences are closed and reopened across chunks", () => {
 test("a single huge line is hard-wrapped", () => {
   const chunks = splitMessage("y".repeat(5000));
   for (const c of chunks) expect(c.length).toBeLessThanOrEqual(2000);
+});
+
+test("both spellings of the subagent tools describe the same way", () => {
+  expect(describeTool("Agent", { description: "map the repo" })).toBe("agent `map the repo`");
+  expect(describeTool("Task", { description: "map the repo" })).toBe(
+    describeTool("Agent", { description: "map the repo" }),
+  );
+  expect(describeTool("AgentOut", { task_id: "explore#1" })).toBe("agentout `explore#1`");
+  expect(describeTool("TaskOutput", { list: true })).toBe(describeTool("AgentOut", { list: true }));
 });
