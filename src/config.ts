@@ -98,10 +98,12 @@ export const config = {
   /** Discord's typing indicator. Off in a busy channel where it is noise: `TYPING=0`. */
   typingIndicator: process.env.TYPING !== "0",
   /**
-   * A turn past this age is reported as stuck by `/healthz`, so the supervisor
-   * can restart a bot that is wedged rather than merely slow. Deliberately
-   * longer than `turnStallMs`: the session gives up on its own first, and
-   * this is only the backstop for the case where even that did not run.
+   * A turn silent for this long is reported as stuck by `/healthz`, so the
+   * supervisor can restart a bot that is wedged rather than merely slow.
+   * Silence, not age: a long turn that keeps streaming events is never stuck.
+   * Deliberately longer than `turnStallMs`: the session gives up on its own
+   * first, and this is only the backstop for the case where even that did
+   * not run.
    */
   turnStuckMs: Math.max(60_000, Number(process.env.TURN_STUCK_MINUTES ?? 20) * 60_000),
   debug: process.env.DEBUG === "1",

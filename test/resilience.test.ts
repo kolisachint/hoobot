@@ -167,6 +167,15 @@ test("turnStalledMs and turnAgeMs report progress to /healthz", async () => {
     await tick();
     expect(s.turnAgeMs).toBeGreaterThan(0);
     expect(s.busy).toBe(true);
+    // Each event resets the silence clock, so a turn that keeps reporting
+    // never ages into "stuck" the way a dead one does.
+    await Bun.sleep(30);
+    const silentBefore = s.turnStalledMs;
+    expect(silentBefore).toBeGreaterThanOrEqual(20);
+    server.notify("item/started", { item: { type: "commandExecution", id: "c1", command: "cargo test" } });
+    await tick();
+    expect(s.turnStalledMs).toBeLessThan(silentBefore);
+    expect(s.turnAgeMs).toBeGreaterThanOrEqual(30);
     s.close();
   } finally {
     config.turnStuckMs = wasStuck;
