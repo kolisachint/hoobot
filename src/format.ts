@@ -64,6 +64,9 @@ export function describeTool(name: string, args: Record<string, any> = {}): stri
       return `fetch ${code(truncate(String(args.url ?? ""), 120))}`;
     case "websearch":
       return `web search ${code(truncate(String(args.query ?? ""), 100))}`;
+    // Both spellings: `Dispatch` is canonical since hoocode 0.1.8, `Task` stays
+    // registered as a deprecated alias for a release.
+    case "Dispatch":
     case "Task":
       return `subagent ${code(truncate(String(args.description ?? args.subagent_type ?? ""), 80))}`;
     default:
