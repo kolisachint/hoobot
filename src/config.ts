@@ -8,6 +8,12 @@ function optional(name: string): string | undefined {
   return process.env[name]?.trim() || undefined;
 }
 
+/** Seconds as ms; null when unset or not a number ≥ 0, so a typo falls back to the default. */
+export function parseSeconds(raw: string | undefined): number | null {
+  const n = Number(raw);
+  return raw !== undefined && Number.isFinite(n) && n >= 0 ? n * 1000 : null;
+}
+
 function list(name: string): string[] {
   return (process.env[name] ?? "")
     .split(",")
@@ -84,6 +90,14 @@ export const config = {
   /** Deadline for a normal app-server call that expects a prompt reply. */
   requestTimeoutMs: Math.max(5_000, Number(process.env.REQUEST_TIMEOUT_SECONDS ?? 120) * 1000),
   /**
+   * How long a turn runs before its status line appears; unset = per chat
+   * (see `statusDelayFor`). Quick answers skip the line, because it only
+   * shows once the turn has outlasted this.
+   */
+  statusDelayMs: parseSeconds(optional("STATUS_DELAY_SECONDS")),
+  /** Discord's typing indicator. Off in a busy channel where it is noise: `TYPING=0`. */
+  typingIndicator: process.env.TYPING !== "0",
+  /**
    * A turn past this age is reported as stuck by `/healthz`, so the supervisor
    * can restart a bot that is wedged rather than merely slow. Deliberately
    * longer than `turnStallMs`: the session gives up on its own first, and
@@ -92,6 +106,19 @@ export const config = {
   turnStuckMs: Math.max(60_000, Number(process.env.TURN_STUCK_MINUTES ?? 20) * 60_000),
   debug: process.env.DEBUG === "1",
 };
+
+/**
+ * How long a turn runs before its status line appears on this chat.
+ *
+ * Slack has no typing indicator for bots, so the status line is the first sign
+ * of life there and 1s keeps the silence short. Discord already shows typing
+ * from the moment a call arrives, so it keeps the original 4s and quick
+ * answers there never flash a line. `STATUS_DELAY_SECONDS` overrides both.
+ */
+export function statusDelayFor(surface: "discord" | "slack"): number {
+  if (config.statusDelayMs !== null) return config.statusDelayMs;
+  return surface === "slack" ? 1_000 : 4_000;
+}
 
 /** The chats that run: Discord, Slack or both. */
 export function surfaces(): ("discord" | "slack")[] {

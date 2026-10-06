@@ -191,38 +191,48 @@ export async function handleCall(call: Call, help: string): Promise<void> {
   }
 
   // One call at a time per space, so read positions advance in order.
-  await inOrder(`${space.surface}:${space.id}`, async () => {
-    // What was said here since the conversation last read, plus the message replied to.
-    const state = await session.readState();
-    const [context, reply] = await Promise.all([call.context(state), call.replyTo?.() ?? null]);
-    // Files on the calling message and on the message it replies to are
-    // saved in the work folder; small text ones are pasted in too.
-    const saved: SavedFile[] = [];
-    const skipped: SkippedFile[] = [];
-    const self: FileMessage = { id: call.messageId, author: call.author, files: call.files };
-    for (const m of [reply?.message, self]) {
-      if (!m?.files.length) continue;
-      const r = await saveAttachments({
-        workdir: session.workdir,
-        spaceId: space.id,
-        messageId: m.id,
-        author: m.author,
-        attachments: m.files,
-        fetcher: call.fetcher,
-        surface: space.surface,
-      });
-      saved.push(...r.saved);
-      skipped.push(...r.skipped);
-    }
-    const prompt = buildPrompt({
-      context,
-      replyTo: reply?.context,
-      attachments: formatAttachments(saved, skipped, space.surface),
-      author: call.author,
-      text: text || "(see the attached files)",
+  // Say “working” before the preamble: the turn is only acknowledged after
+  // a thread round trip, reading history and saving attachments, and the
+  // indicator is the only sign of life until then.
+  session.beginCall();
+  try {
+    await inOrder(`${space.surface}:${space.id}`, async () => {
+      // What was said here since the conversation last read, plus the message replied to.
+      const state = await session.readState();
+      const [context, reply] = await Promise.all([call.context(state), call.replyTo?.() ?? null]);
+      // Files on the calling message and on the message it replies to are
+      // saved in the work folder; small text ones are pasted in too.
+      const saved: SavedFile[] = [];
+      const skipped: SkippedFile[] = [];
+      const self: FileMessage = { id: call.messageId, author: call.author, files: call.files };
+      for (const m of [reply?.message, self]) {
+        if (!m?.files.length) continue;
+        const r = await saveAttachments({
+          workdir: session.workdir,
+          spaceId: space.id,
+          messageId: m.id,
+          author: m.author,
+          attachments: m.files,
+          fetcher: call.fetcher,
+          surface: space.surface,
+        });
+        saved.push(...r.saved);
+        skipped.push(...r.skipped);
+      }
+      const prompt = buildPrompt({
+        context,
+        replyTo: reply?.context,
+        attachments: formatAttachments(saved, skipped, space.surface),
+        author: call.author,
+        text: text || "(see the attached files)",
     });
     if (await session.prompt(prompt, imageInputs(saved), { id: call.messageId })) session.markSeen(call.messageId);
-  });
+    });
+  } finally {
+    // When no turn came of it (the preamble threw, or turn/start was
+    // refused), nothing else would stop the indicator.
+    session.endCall();
+  }
 }
 
 /** Every live conversation: which space, which folder, busy or not. */
