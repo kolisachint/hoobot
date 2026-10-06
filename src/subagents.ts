@@ -18,7 +18,7 @@
  *   failure.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 /** One recorded attempt. Only the fields this file reads are typed. */
@@ -77,6 +77,26 @@ export function parseLedger(text: string): LedgerAttempt[] {
   return attempts;
 }
 
+/**
+ * The parsed ledger, or null when there is none. `/healthz` is polled by the
+ * supervisor and the ledger holds up to 20k lines, so a parse is reused until
+ * the file's size or mtime changes.
+ */
+const cache = new Map<string, { size: number; mtimeMs: number; attempts: LedgerAttempt[] }>();
+function readLedger(path: string): LedgerAttempt[] | null {
+  try {
+    const { size, mtimeMs } = statSync(path);
+    const hit = cache.get(path);
+    if (hit && hit.size === size && hit.mtimeMs === mtimeMs) return hit.attempts;
+    const attempts = parseLedger(readFileSync(path, "utf8"));
+    cache.set(path, { size, mtimeMs, attempts });
+    return attempts;
+  } catch {
+    cache.delete(path);
+    return null;
+  }
+}
+
 /** The lower median: with an even count, the smaller of the two middles. */
 function median(values: number[]): number {
   if (values.length === 0) return 0;
@@ -100,16 +120,10 @@ export function subagentStats(workdir: string, windowMs?: number): SubagentStats
     maxMs: 0,
     lastFailure: null,
   };
-  const path = ledgerPath(workdir);
-  if (!existsSync(path)) return empty;
-  let text: string;
-  try {
-    text = readFileSync(path, "utf8");
-  } catch {
-    return empty;
-  }
+  const parsed = readLedger(ledgerPath(workdir));
+  if (!parsed) return empty;
   const cutoff = windowMs ? Date.now() - windowMs : null;
-  const attempts = parseLedger(text).filter((a) => !cutoff || Number(a.ts) >= cutoff);
+  const attempts = parsed.filter((a) => !cutoff || Number(a.ts) >= cutoff);
   if (attempts.length === 0) return { ...empty, known: true };
 
   const statuses: Record<string, number> = {};

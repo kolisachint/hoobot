@@ -133,3 +133,10 @@ test("durations read the way a person would say them", () => {
   expect(humanMs(192_000)).toBe("3m12s");
   expect(humanMs(3_840_000)).toBe("1h04m");
 });
+
+test("a rewritten ledger is re-read, not served from the cache", () => {
+  withLedger([attempt()]);
+  expect(subagentStats(workdir).attempts).toBe(1);
+  withLedger([attempt(), attempt({ status: "timeout", ok: false })]);
+  expect(subagentStats(workdir).attempts).toBe(2);
+});

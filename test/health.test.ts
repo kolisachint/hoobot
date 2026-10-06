@@ -175,6 +175,7 @@ test("a taken health port is reported loudly rather than silently dropped", () =
 
 test("healthz reports subagent reliability from the dispatch ledger", async () => {
   const dir = mkdtempSync(join(tmpdir(), "hoobot-health-subagents-"));
+  const workdir = config.workdir;
   try {
     const path = join(dir, ".cortexcode", "dispatch", "ledger.jsonl");
     mkdirSync(dirname(path), { recursive: true });
@@ -193,6 +194,7 @@ test("healthz reports subagent reliability from the dispatch ledger", async () =
     Object.assign(config, { workdir: join(dir, "empty") });
     expect(healthBody(new HealthState("test-Instance")).subagents).toBeUndefined();
   } finally {
+    Object.assign(config, { workdir });
     rmSync(dir, { recursive: true, force: true });
   }
 });
