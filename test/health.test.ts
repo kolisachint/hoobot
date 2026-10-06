@@ -198,3 +198,16 @@ test("healthz reports subagent reliability from the dispatch ledger", async () =
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("stuck means silent, not old: a long turn that keeps reporting is healthy", async () => {
+  const { isStuck } = await import("../src/health.ts");
+  const twenty = 20 * 60_000;
+  // Idle is never stuck, however long ago the last event was.
+  expect(isStuck(false, 5 * twenty, twenty)).toBe(false);
+  // A two-hour review whose last event was a second ago: healthy. When age
+  // was the signal, this restarted the bot at the 20-minute mark.
+  expect(isStuck(true, 1_000, twenty)).toBe(false);
+  // Silent for the full window: wedged.
+  expect(isStuck(true, twenty, twenty)).toBe(true);
+  expect(isStuck(true, twenty + 1, twenty)).toBe(true);
+});

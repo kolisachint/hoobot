@@ -403,10 +403,11 @@ curl -s localhost:8787/healthz   # ok, uptime, pid, surfaces, last message
 curl -s localhost:8787/api/bots  # + work folders, links file, live sessions
 ```
 
-`ok` is not only liveness. A turn that has outrun `TURN_STUCK_MINUTES` is a
-real outage for whoever is waiting on it, so `/healthz` reports `ok:false` and
-lists the session in `stuckSessions` — which is the signal the supervisor acts
-on. `/api/bots` keeps reporting `ok:true` so the manager page still loads;
+`ok` is not only liveness. A turn that has sent no event for
+`TURN_STUCK_MINUTES` is a real outage for whoever is waiting on it, so
+`/healthz` reports `ok:false` and lists the session in `stuckSessions` — which
+is the signal the supervisor acts on. Silence, not age: a long turn that keeps
+streaming progress is never stuck, however long it runs. `/api/bots` keeps reporting `ok:true` so the manager page still loads;
 its `sessions` carry `turnAgeMs`, `turnStalledMs` and `stuck`.
 
 ### When a turn wedges

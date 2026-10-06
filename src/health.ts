@@ -46,9 +46,22 @@ export type SessionStatus = {
   turnAgeMs?: number;
   /** How long the running turn has gone without an event, in ms. 0 when idle. */
   turnStalledMs?: number;
-  /** True when the turn has outrun `config.turnStuckMs`. */
+  /** True when the running turn has been silent for `config.turnStuckMs`. */
   stuck?: boolean;
 };
+
+/**
+ * Whether a turn is stuck: busy, and silent for `stuckMs`.
+ *
+ * Measured from the last event, not the start. Age is the wrong signal: a
+ * long review or a cargo build streams events for an hour and is perfectly
+ * healthy, and when age was used the supervisor restarted the bot at the
+ * 20-minute mark, killing every conversation on it mid-work. Silence is what
+ * a wedged turn actually looks like.
+ */
+export function isStuck(busy: boolean, turnStalledMs: number, stuckMs = config.turnStuckMs): boolean {
+  return busy && turnStalledMs >= stuckMs;
+}
 
 /**
  * What the bot is doing, kept by whoever is running it: the surfaces
@@ -109,7 +122,7 @@ export class HealthState {
 export function healthBody(state: HealthState, sessions: () => SessionStatus[] = () => []): Record<string, unknown> {
   // Liveness used to mean "the process is up", which a bot with a wedged turn
   // satisfied perfectly — so the supervisor restarted nothing while a thread sat
-  // silent for hours. A turn that has outrun `turnStuckMs` is a real outage for
+  // silent for hours. A turn silent for `turnStuckMs` is a real outage for
   // whoever is waiting on it, so it is reported here and the bot says itself
   // unhealthy until the session gives up on its own or recovers.
   const stuck = sessions().filter((s) => s.stuck);
