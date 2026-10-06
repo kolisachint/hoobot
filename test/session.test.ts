@@ -42,6 +42,7 @@ function fakeThread(pick?: string) {
   const deleted: string[] = [];
   const replies: (string | null)[] = [];
   const uploads: string[][] = [];
+  const typing: number[] = [];
   const posted = (text: string) => ({
     edit: async (t: string) => void (sent[sent.indexOf(text)] = t),
     delete: async () => void deleted.push(text),
@@ -57,13 +58,16 @@ function fakeThread(pick?: string) {
     menus,
     replies,
     uploads,
+    typing,
     async send(text: string, opts: any = {}) {
       sent.push(text);
       if (opts.replyTo) replies.push(opts.replyTo);
       if (opts.files?.length) uploads.push(opts.files.map((f: any) => f.name));
       return posted(text);
     },
-    async sendTyping() {},
+    async sendTyping() {
+      typing.push(Date.now());
+    },
     async choose(text: string, kind: string, choices: any[]) {
       sent.push(text);
       if (kind === "menu") menus.push({ options: choices });
@@ -323,4 +327,180 @@ test("a channel and its thread working in one folder at once each get only their
   b.close();
   expect(chan.uploads).toEqual([["a.html"]]);
   expect(thr.uploads).toEqual([["b.svg"]]);
+});
+
+// ── Typing indicator ────────────────────────────────────────────────────────
+
+test("typing starts with the turn and stops when it completes", async () => {
+  const server = new FakeServer();
+  const thread: any = fakeThread();
+  const s = new ThreadSession(thread, server as any, new LinkStore(linksPath("ty")), () => {});
+  await s.prompt("do it");
+  expect(thread.typing.length).toBeGreaterThan(0);
+  server.notify("turn/completed", { turn: { id: "u1", status: "completed" } });
+  await tick();
+  s.close();
+  expect(thread.typing.length).toBe(1); // one ping, no heartbeat left running
+});
+
+test("typing is off when TYPING=0", async () => {
+  const was = config.typingIndicator;
+  config.typingIndicator = false;
+  try {
+    const server = new FakeServer();
+    const thread: any = fakeThread();
+    const s = new ThreadSession(thread, server as any, new LinkStore(linksPath("ty0")), () => {});
+    await s.prompt("do it");
+    server.notify("turn/completed", { turn: { id: "u1", status: "completed" } });
+    await tick();
+    s.close();
+    expect(thread.typing).toHaveLength(0);
+  } finally {
+    config.typingIndicator = was;
+  }
+});
+
+test("typing pauses while an approval waits on a person, then resumes", async () => {
+  const server = new FakeServer();
+  const thread: any = fakeThread();
+  // A pick that stays pending until the test releases it, like a real person
+  // deciding. `fakeThread(pick)` resolves at once, which would resume the
+  // indicator before the pause could be observed.
+  let release: (v: any) => void = () => {};
+  const pickP = new Promise((r) => (release = r));
+  pickP.catch(() => {});
+  thread.choose = async (text: string, kind: string, choices: any[]) => {
+    thread.sent.push(text);
+    // The code calls `update` on the pick's resolution, not on the message.
+    const click = { value: "accept", user: "tester", update: async () => {} };
+    return { msg: { edit: async () => {}, update: async () => {} }, pick: pickP.then(() => click) };
+  };
+  const s = new ThreadSession(thread, server as any, new LinkStore(linksPath("tya")), () => {});
+  await s.prompt("do it");
+  const before = thread.typing.length;
+  server.emit("request", {
+    id: "r1",
+    method: "item/commandExecution/requestApproval",
+    params: { threadId: "t1", command: "rm -rf build" },
+  });
+  await tick();
+  expect(thread.sent.some((m: string) => m.startsWith("**Approval needed**"))).toBe(true);
+  expect((s as any).typingTimer).toBeNull(); // paused
+  // Another message while the buttons wait doesn't turn it back on.
+  s.beginCall();
+  await s.prompt("also this");
+  s.endCall();
+  expect((s as any).typingTimer).toBeNull();
+  expect(thread.typing.length).toBe(before);
+  release({ value: "accept", user: "tester" });
+  await tick();
+  expect(thread.typing.length).toBeGreaterThan(before); // resumed
+  server.notify("turn/completed", { turn: { id: "u1", status: "completed" } });
+  await tick();
+  s.close();
+});
+
+// ── Status-line delay ────────────────────────────────────────────────────────
+
+test("the status line waits per chat: 1s on Slack (no typing there), 4s on Discord", async () => {
+  const { statusDelayFor } = await import("../src/config.ts");
+  const was = config.statusDelayMs;
+  try {
+    config.statusDelayMs = null;
+    expect(statusDelayFor("slack")).toBe(1_000);
+    expect(statusDelayFor("discord")).toBe(4_000);
+    config.statusDelayMs = 2_500; // STATUS_DELAY_SECONDS=2.5 overrides both
+    expect(statusDelayFor("slack")).toBe(2_500);
+    expect(statusDelayFor("discord")).toBe(2_500);
+  } finally {
+    config.statusDelayMs = was;
+  }
+});
+
+test("the status line stays hidden inside the delay", async () => {
+  const was = config.statusDelayMs;
+  config.statusDelayMs = 60_000; // far longer than the test
+  try {
+    const server = new FakeServer();
+    const thread: any = fakeThread();
+    thread.surface = "slack"; // default 1s: a broken override would show the line
+    const s = new ThreadSession(thread, server as any, new LinkStore(linksPath("sd")), () => {});
+    await s.prompt("do it");
+    server.notify("item/started", { item: { type: "commandExecution", id: "c1", command: "gh pr create" } });
+    await new Promise((r) => setTimeout(r, 1700)); // past one 1.5s poll
+    s.close();
+    expect(thread.sent).toHaveLength(0);
+  } finally {
+    config.statusDelayMs = was;
+  }
+});
+
+test("the status line appears once the delay has passed", async () => {
+  const was = config.statusDelayMs;
+  config.statusDelayMs = 0;
+  try {
+    const server = new FakeServer();
+    const thread: any = fakeThread();
+    const s = new ThreadSession(thread, server as any, new LinkStore(linksPath("sd0")), () => {});
+    await s.prompt("do it");
+    server.notify("item/started", { item: { type: "commandExecution", id: "c1", command: "gh pr create" } });
+    // The progress poller runs every 1.5s; wait past one tick.
+    await new Promise((r) => setTimeout(r, 1700));
+    s.close();
+    expect(thread.sent.some((m: string) => m.startsWith("⏳ Working"))).toBe(true);
+  } finally {
+    config.statusDelayMs = was;
+  }
+});
+
+test("typing started on arrival stops when no turn comes of the call", async () => {
+  const server = new FakeServer();
+  const thread: any = fakeThread();
+  const s = new ThreadSession(thread, server as any, new LinkStore(linksPath("tys")), () => {});
+  s.beginCall(); // what handleCall does on arrival
+  expect(thread.typing).toHaveLength(1);
+  s.endCall(); // the preamble failed: no turn
+  expect((s as any).typingTimer).toBeNull();
+  // With a turn running, ending the call leaves its indicator alone.
+  s.beginCall();
+  await s.prompt("do it");
+  s.endCall();
+  expect((s as any).typingTimer).not.toBeNull();
+  s.close();
+});
+
+test("a call queued behind a turn keeps typing when that turn completes", async () => {
+  const server = new FakeServer();
+  const thread: any = fakeThread();
+  const s = new ThreadSession(thread, server as any, new LinkStore(linksPath("tyq")), () => {});
+  s.beginCall();
+  await s.prompt("first");
+  s.endCall();
+  s.beginCall(); // second message: still in its preamble
+  server.notify("turn/completed", { turn: { id: "u1", status: "completed" } });
+  await tick();
+  expect((s as any).typingTimer).not.toBeNull();
+  s.endCall(); // its turn/start was refused, say
+  expect((s as any).typingTimer).toBeNull();
+  s.close();
+});
+
+test("STATUS_DELAY_SECONDS: a typo falls back to the per-chat default", async () => {
+  const { parseSeconds } = await import("../src/config.ts");
+  expect(parseSeconds(undefined)).toBeNull();
+  expect(parseSeconds("0")).toBe(0);
+  expect(parseSeconds("2.5")).toBe(2_500);
+  expect(parseSeconds("4s")).toBeNull();
+  expect(parseSeconds("-1")).toBeNull();
+});
+
+test("!new during a turn stops its typing", async () => {
+  const server = new FakeServer();
+  const thread: any = fakeThread();
+  const s = new ThreadSession(thread, server as any, new LinkStore(linksPath("tyn")), () => {});
+  await s.prompt("do it");
+  expect((s as any).typingTimer).not.toBeNull();
+  await s.newSession();
+  expect((s as any).typingTimer).toBeNull();
+  s.close();
 });

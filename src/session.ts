@@ -6,7 +6,7 @@
  * Uses only standard Codex methods, so it works against `hoocode app-server`
  * and the real `codex app-server` alike.
  */
-import { config } from "./config.ts";
+import { config, statusDelayFor } from "./config.ts";
 import { error, log, warn } from "./log.ts";
 import type { ChatSpace, Choice, Posted } from "./chat.ts";
 import { idOrder } from "./context.ts";
@@ -44,6 +44,8 @@ export class ThreadSession {
   /** Latest agent message of the running turn; posted when the turn ends. */
   private answer: string | null = null;
   private typingTimer: ReturnType<typeof setInterval> | null = null;
+  /** Calls accepted by `beginCall` whose `endCall` hasn't run: each one is still working. */
+  private pendingCalls = 0;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   /** Fires when a running turn has said nothing for too long. */
   private stallTimer: ReturnType<typeof setTimeout> | null = null;
@@ -232,6 +234,9 @@ export class ThreadSession {
     if (this.threadId) await this.client.request("thread/unsubscribe", { threadId: this.threadId }).catch(() => {});
     this.clearTurn();
     turnLog.end(this.workdir, this.linkKey);
+    // The old turn's turn/completed will never match again, so nothing else
+    // would stop its indicator.
+    this.stopTypingIfIdle();
     // The new conversation knows nothing: the next call reads the last 30 again.
     this.seenId = null;
     this.wasLinked = false;
@@ -442,7 +447,7 @@ export class ThreadSession {
     // throw here would leave the session wedged all over again.
     this.clearTurn();
     turnLog.end(this.workdir, this.linkKey);
-    this.stopTyping();
+    this.stopTypingIfIdle();
     this.caller = null;
     this.answer = null;
     await this.post(
@@ -464,7 +469,8 @@ export class ThreadSession {
         if (p.turn.id !== this.turnId) break;
         this.clearTurn();
         turnLog.end(this.workdir, this.linkKey);
-        this.stopTyping();
+        // A call queued behind this turn may still be in its preamble.
+        this.stopTypingIfIdle();
         await this.flushProgress();
         await this.finishTurn(p.turn);
         this.touch();
@@ -577,7 +583,7 @@ export class ThreadSession {
     if (!status || this.verbose) return;
     const now = Date.now();
     // Quick answers need no status line; then refresh every 3 s.
-    if (now - status.summary.startedAt < 4000 || now - status.at < 3000) return;
+    if (now - status.summary.startedAt < statusDelayFor(this.thread.surface) || now - status.at < 3000) return;
     status.at = now;
     const body = status.summary.statusLine(now);
     await this.enqueue(async () => {
@@ -660,7 +666,7 @@ export class ThreadSession {
       this.client.respond(r.id, { decision: "decline" });
       await this.markResolved(approval, "**No answer, denied.**");
     }
-    if (this.turnId) this.startTyping();
+    if (this.turnId || this.pendingCalls) this.startTyping();
   }
 
   /** The server says request `id` is settled (answered by any client, or the turn ended). */
@@ -706,8 +712,35 @@ export class ThreadSession {
     return next;
   }
 
+  /**
+   * A call was accepted and is about to become a prompt: say “working” now.
+   *
+   * A turn is only acknowledged after `ensureThread` (a thread/start or resume
+   * round trip), reading history, saving attachments and a turn/start round
+   * trip — a couple of seconds on a message with files. Starting the indicator
+   * here closes that gap. Pair every call with `endCall`.
+   */
+  beginCall() {
+    this.pendingCalls++;
+    this.startTyping();
+  }
+
+  /**
+   * The call from `beginCall` is done, whether or not it became a turn. When
+   * it didn't (the preamble threw, or turn/start was refused) there is no
+   * turn/completed to stop the indicator, and a bot that failed would look
+   * busy forever.
+   */
+  endCall() {
+    this.pendingCalls = Math.max(0, this.pendingCalls - 1);
+    this.stopTypingIfIdle();
+  }
+
   private startTyping() {
-    if (this.typingTimer) return;
+    if (this.typingTimer || !config.typingIndicator) return;
+    // Waiting on a person's click is not working: an approval keeps it off
+    // until it's answered, even if another message arrives meanwhile.
+    if ([...this.approvals.values()].some((a) => !a.resolved)) return;
     // The typing indicator is decoration: it must never be able to interrupt
     // the turn bookkeeping, so every path into it is guarded.
     const ping = () => this.thread.sendTyping?.().catch(() => {});
@@ -718,6 +751,11 @@ export class ThreadSession {
   private stopTyping() {
     if (this.typingTimer) clearInterval(this.typingTimer);
     this.typingTimer = null;
+  }
+
+  /** Stop unless a turn runs or an accepted call is still in its preamble. */
+  private stopTypingIfIdle() {
+    if (!this.turnId && this.pendingCalls === 0) this.stopTyping();
   }
 
   /** Let go of idle threads; the server keeps them on disk. */
