@@ -8,7 +8,7 @@
 import { log, error, warn } from "./log.ts";
 import { config } from "./config.ts";
 import { CodexClient } from "./codex-client.ts";
-import { health, type SessionStatus } from "./health.ts";
+import { health, isStuck, type SessionStatus } from "./health.ts";
 import { LinkStore } from "./links.ts";
 import { ThreadSession } from "./session.ts";
 import { buildPrompt, type ContextMessage } from "./context.ts";
@@ -237,7 +237,7 @@ export function sessionStatus(): SessionStatus[] {
     turnStalledMs: s.turnStalledMs,
     // The session's own stall timer normally clears this first; this is the
     // backstop that lets the supervisor see a bot that never recovered.
-    stuck: s.busy && s.turnAgeMs >= config.turnStuckMs,
+    stuck: isStuck(s.busy, s.turnStalledMs),
   }));
 }
 
