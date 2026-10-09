@@ -324,7 +324,9 @@ export class Slack {
     const web = this.web;
     const toMrkdwn = this.toMrkdwn;
     const posted = (ts: string | undefined): Posted => ({
-      edit: (text) => (ts ? web.chat.update({ channel, ts, text: toMrkdwn(text), blocks: [] }) : Promise.resolve()),
+      // No ts (a file upload): reject, so a caller that edits in place falls back to posting.
+      edit: (text) =>
+        ts ? web.chat.update({ channel, ts, text: toMrkdwn(text), blocks: [] }) : Promise.reject(new Error("no message to edit")),
       delete: () => (ts ? web.chat.delete({ channel, ts }) : Promise.resolve()),
     });
     return {
@@ -532,6 +534,7 @@ export class Slack {
     pending.resolve({
       value,
       user: body.user?.username ?? body.user?.name ?? (await this.name(userId)),
+      userId,
       update: (text) => this.web.chat.update({ channel, ts, text: this.toMrkdwn(text), blocks: [] }),
     });
   }

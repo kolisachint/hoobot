@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { duration, TurnSummary } from "../src/summary.ts";
+import { duration, radarChain, TurnSummary, type ToolStep } from "../src/summary.ts";
 
 const bash = (id: string, command: string, out = "", exitCode = 0) => ({
   type: "commandExecution",
@@ -16,12 +16,82 @@ test("a plain chat turn has no footer", () => {
   expect(s.footer("gpt-x", 5_000)).toBe("");
 });
 
-test("status line counts steps and shows the current one", () => {
+test("status line shows the radar chain of tool names and the counts", () => {
   const s = new TurnSummary(0);
   s.started(bash("1", "ls"));
   s.completed(bash("1", "ls"));
   s.started(bash("2", "bun test"));
-  expect(s.statusLine(83_000)).toBe("⏳ Working · 2 steps · 1m 23s · bash `bun test`");
+  expect(s.statusLine(83_000)).toBe("⏳ Working · 1m 23s · Shell › Shell… · 1 done");
+});
+
+test("status line before any step is just the clock", () => {
+  const s = new TurnSummary(0);
+  expect(s.statusLine(5_000)).toBe("⏳ Working · 5s");
+});
+
+test("status line never shows command text or arguments", () => {
+  const s = new TurnSummary(0);
+  s.started(bash("1", "bun test --secret-flag"));
+  s.completed(bash("1", "bun test --secret-flag", "boom", 1));
+  s.started({ type: "dynamicToolCall", id: "2", tool: "read", arguments: { path: "/w/private/notes.md" } });
+  s.started({ type: "fileChange", id: "3", status: "inProgress", changes: [{ path: "/w/src/a.ts" }] });
+  const line = s.statusLine(1_000);
+  expect(line).toBe("⏳ Working · 1s · Shell✗ › read… › Edit… · 1 done · 1 failed");
+  expect(line).not.toContain("bun test");
+  expect(line).not.toContain("private");
+  expect(line).not.toContain("`");
+});
+
+test("status line counts done and failed in words", () => {
+  const s = new TurnSummary(0);
+  s.started(bash("1", "ls"));
+  s.completed(bash("1", "ls"));
+  s.started(bash("2", "false"));
+  s.completed(bash("2", "false", "", 1));
+  expect(s.statusLine(2_000)).toBe("⏳ Working · 2s · Shell › Shell✗ · 2 done · 1 failed");
+});
+
+test("status line omits the failed count when nothing failed", () => {
+  const s = new TurnSummary(0);
+  s.started(bash("1", "ls"));
+  s.completed(bash("1", "ls"));
+  expect(s.statusLine(2_000)).toBe("⏳ Working · 2s · Shell · 1 done");
+});
+
+test("radar collapses consecutive successful repeats", () => {
+  const step = (id: string, tool: string, state: ToolStep["state"] = "ok"): ToolStep => ({ id, tool, state });
+  expect(radarChain([step("1", "Read"), step("2", "Read"), step("3", "Read"), step("4", "Read")])).toBe("Read ×4");
+  expect(radarChain([step("1", "Read"), step("2", "Read"), step("3", "Edit"), step("4", "Read")])).toBe("Read ×2 › Edit › Read");
+});
+
+test("radar never merges a failure and marks it with ✗", () => {
+  const step = (id: string, tool: string, state: ToolStep["state"]): ToolStep => ({ id, tool, state });
+  expect(radarChain([step("1", "Read", "ok"), step("2", "Read", "error"), step("3", "Read", "ok")])).toBe(
+    "Read › Read✗ › Read",
+  );
+  expect(radarChain([step("1", "Read", "error"), step("2", "Read", "error")])).toBe("Read✗ › Read✗");
+});
+
+test("radar ends with a running marker", () => {
+  const step = (id: string, tool: string, state: ToolStep["state"]): ToolStep => ({ id, tool, state });
+  expect(radarChain([step("1", "Read", "ok"), step("2", "Shell", "running")])).toBe("Read › Shell…");
+  expect(radarChain([])).toBe("");
+});
+
+test("radar elides the middle beyond 8 segments, keeping 3 head and 2 tail", () => {
+  const names = ["A", "B", "C", "D", "E", "F", "G", "H", "I"];
+  const steps: ToolStep[] = names.map((tool, i) => ({ id: String(i), tool, state: "ok" }));
+  expect(radarChain(steps)).toBe("A › B › C › … › H › I");
+  // Exactly 8 segments are shown in full.
+  expect(radarChain(steps.slice(0, 8))).toBe("A › B › C › D › E › F › G › H");
+});
+
+test("status line uses the same radar and names MCP and web tools by name", () => {
+  const s = new TurnSummary(0);
+  s.started({ type: "mcpToolCall", id: "1", server: "github", tool: "search_code", arguments: { q: "secret" } });
+  s.completed({ type: "mcpToolCall", id: "1", server: "github", tool: "search_code", status: "completed" });
+  s.started({ type: "webSearch", id: "2", query: "bun test runner" });
+  expect(s.statusLine(3_000)).toBe("⏳ Working · 3s · github/search_code › WebSearch… · 1 done");
 });
 
 test("footer picks up PRs, commits and edited files", () => {

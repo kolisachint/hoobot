@@ -23,3 +23,33 @@ test("WORKSPACES maps channels to folders; others use HOO_WORKDIR", () => {
     Object.assign(config, saved);
   }
 });
+
+test("prepareWorkspace writes the tool names hoocode 0.1.12 uses, and rewrites the old lists", async () => {
+  const { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { prepareWorkspace } = await import("../src/config.ts");
+  const saved = config.approvals;
+  const dir = mkdtempSync(join(tmpdir(), "hoobot-workspace-"));
+  const cfgPath = join(dir, ".cortexcode", "hoo-config.json");
+  const allowed = () => JSON.parse(readFileSync(cfgPath, "utf8")).modes.discord.auto_allow;
+  try {
+    config.approvals = "auto";
+    prepareWorkspace(dir);
+    expect(allowed()).toEqual(["read", "Read", "bash", "Shell", "edit", "Edit", "write", "Write"]);
+
+    // A file hoobot wrote before the rename is rewritten; a file someone edited is not.
+    mkdirSync(join(dir, ".cortexcode"), { recursive: true });
+    writeFileSync(cfgPath, JSON.stringify({ active_mode: "discord", modes: { discord: { auto_allow: ["read", "bash", "edit", "write"] } } }, null, 2) + "\n");
+    prepareWorkspace(dir);
+    expect(allowed()).toEqual(["read", "Read", "bash", "Shell", "edit", "Edit", "write", "Write"]);
+
+    config.approvals = "ask";
+    writeFileSync(cfgPath, JSON.stringify({ active_mode: "discord", modes: { discord: { auto_allow: ["mine"] } } }, null, 2) + "\n");
+    prepareWorkspace(dir);
+    expect(allowed()).toEqual(["mine"]);
+  } finally {
+    config.approvals = saved;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

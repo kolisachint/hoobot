@@ -30,6 +30,8 @@ export interface Picked {
   value: string;
   /** Display name of who picked. */
   user: string;
+  /** Chat user id of who picked (the key for per-user grants). */
+  userId: string;
   /** Replace the message's text and remove the controls. */
   update(text: string): Promise<unknown>;
 }

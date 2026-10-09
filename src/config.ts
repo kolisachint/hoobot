@@ -71,6 +71,12 @@ export const config = {
   linksFile: resolve(
     process.env.LINKS_FILE?.trim() || join(homedir(), ".local", "share", "hoobot", "links.json"),
   ),
+  /**
+   * Users who picked "Always for me" on an approval prompt, as a JSON array of
+   * chat user ids. The bot runs with cwd = its instance dir
+   * (~/.hoobot/runtime/<name>/), so this file is per bot.
+   */
+  grantsFile: resolve(expandHome(process.env.GRANTS_FILE?.trim() || "approvals.json")),
   /** `auto`: bash/edit/write run without asking. `ask`: Allow / Deny buttons. */
   approvals: (process.env.APPROVALS?.trim().toLowerCase() === "ask" ? "ask" : "auto") as "auto" | "ask",
   approvalTimeoutMs: Number(process.env.APPROVAL_TIMEOUT_MINUTES ?? 10) * 60_000,
@@ -228,8 +234,8 @@ export function prepareWorkspace(workdir = config.workdir) {
   const cfgPath = join(hooDir, "hoo-config.json");
   const cfg = (allow: string[]) =>
     JSON.stringify({ active_mode: "discord", modes: { discord: { auto_allow: allow } } }, null, 2) + "\n";
-  const cfgVariants = [cfg(["read"]), cfg(AUTO_ALLOW)];
-  if (writeGenerated(cfgPath, cfg(ask ? ["read"] : AUTO_ALLOW), cfgVariants)) {
+  const cfgVariants = [cfg(["read"]), cfg(["read", "bash", "edit", "write"]), cfg(["read", "Read"]), cfg(AUTO_ALLOW)];
+  if (writeGenerated(cfgPath, cfg(ask ? ["read", "Read"] : AUTO_ALLOW), cfgVariants)) {
     log(`Wrote ${cfgPath} (${ask ? "bash/edit/write ask in the chat first" : "bash/edit/write run without asking"})`);
   }
 
@@ -284,7 +290,7 @@ function chatPrompt(ask: boolean, chats: Chat[]): string {
   ].join("\n");
 }
 
-const AUTO_ALLOW = ["read", "bash", "edit", "write"];
+const AUTO_ALLOW = ["read", "Read", "bash", "Shell", "edit", "Edit", "write", "Write"];
 
 function systemPrompt(ask: boolean, shared = true, files = true): string {
   return [

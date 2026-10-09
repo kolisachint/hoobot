@@ -33,7 +33,7 @@ export function fakeSpace(
       log.push(`SEND  ${text}  [buttons]`);
       opts.onChoose?.();
       const pick: Promise<Picked> = opts.pick
-        ? Promise.resolve({ value: opts.pick(choices), user: "tester", update: async (t: string) => void log.push(`CLICK ${t}`) })
+        ? Promise.resolve({ value: opts.pick(choices), user: "tester", userId: "U-tester", update: async (t: string) => void log.push(`CLICK ${t}`) })
         : Promise.reject(new Error("no choices expected"));
       pick.catch(() => {});
       return { msg: posted(), pick };

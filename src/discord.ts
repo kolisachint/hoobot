@@ -191,6 +191,7 @@ export function discordSpace(channel: WorkChannel, link: (text: string) => strin
           (i): Picked => ({
             value: i.isStringSelectMenu() ? i.values[0]! : choices[Number(i.customId.split(":")[1])]!.value,
             user: i.user.username,
+            userId: i.user.id,
             update: (t) => i.update({ content: link(t), components: [] }),
           }),
         );

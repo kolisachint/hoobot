@@ -15,6 +15,7 @@ import { CodexClient, RpcError, userInput, type Notification, type RequestId, ty
 import type { LinkStore } from "./links.ts";
 import { TurnSummary } from "./summary.ts";
 import { subagentLine } from "./subagents.ts";
+import { grants, type Grants } from "./grants.ts";
 import {
   changedSince,
   claimChanged,
@@ -40,7 +41,7 @@ export class ThreadSession {
   /** Show every tool step and in-between message (`!verbose`). Off: status line + final answer. */
   private verbose = false;
   /** The running turn's summary and its status-line message. */
-  private live: { summary: TurnSummary; msg: Posted | null; at: number } | null = null;
+  private live: { summary: TurnSummary; msg: Posted | null; at: number; queued: number } | null = null;
   /** Latest agent message of the running turn; posted when the turn ends. */
   private answer: string | null = null;
   private typingTimer: ReturnType<typeof setInterval> | null = null;
@@ -70,6 +71,10 @@ export class ThreadSession {
   private wasLinked = false;
   /** The message that started the running turn; the answer replies to it. */
   private caller: { id: string } | null = null;
+  /** Chat user who started (or last steered) the running turn; approvals check their grant. */
+  private turnUser: string | undefined = undefined;
+  /** "Always for me" grants. A public field so tests can swap in their own. */
+  grants: Pick<Grants, "has" | "add"> = grants;
   /** Serialises chat sends so replies stay in order. */
   private queue: Promise<unknown> = Promise.resolve();
   private ready: Promise<void> | null = null;
@@ -209,7 +214,11 @@ export class ThreadSession {
    * `caller`: the chat message this answers; the final answer replies to it.
    * Resolves true when the server took the message (a new turn or a steer).
    */
-  async prompt(text: string, images: { data: string; mimeType: string }[] = [], caller?: { id: string }): Promise<boolean> {
+  async prompt(
+    text: string,
+    images: { data: string; mimeType: string }[] = [],
+    caller?: { id: string; userId?: string },
+  ): Promise<boolean> {
     this.touch();
     await this.ensureThread();
     const input = userInput(text, images);
@@ -217,7 +226,7 @@ export class ThreadSession {
     if (this.turnId) {
       try {
         await this.client.request("turn/steer", { threadId: this.threadId, input, expectedTurnId: this.turnId });
-        await this.post("Queued. It'll be read after the current step.");
+        await this.noteQueued();
         return true;
       } catch (err) {
         // The turn ended in the meantime: start a new one below.
@@ -239,6 +248,9 @@ export class ThreadSession {
       if (want) this.model = want;
       this.beginTurn(res.turn.id);
       this.caller = caller ?? null;
+      // Whose grant applies is decided by who starts the turn, not by a steer.
+      // A peer bot (no userId) never inherits a person's grant.
+      this.turnUser = caller?.userId;
       return true;
     } catch (err) {
       const hint = authHint(errorText(err));
@@ -497,7 +509,7 @@ export class ThreadSession {
     turnLog.begin(this.workdir, this.linkKey);
     this.tools = [];
     this.progressMsg = null;
-    this.live = { summary: new TurnSummary(), msg: null, at: 0 };
+    this.live = { summary: new TurnSummary(), msg: null, at: 0, queued: 0 };
     this.answer = null;
     try {
       this.startTyping();
@@ -666,15 +678,27 @@ export class ThreadSession {
     } else if (!answer && !this.verbose && turn.status === "completed") {
       parts.push("Done.");
     }
+    // Non-verbose: the status line becomes the answer's first text chunk, edited
+    // in place. An edit can't attach files, so a chunk with files is posted.
+    const reuse = !this.verbose && status ? await this.enqueue(async () => status.msg) : null;
+    let reused = false;
+    // Only the first chunk may take over the status message; later ones are posted in order.
+    const say = async (text: string, replyTo: { id: string } | null, attach: Attachment[], first: boolean) => {
+      if (reuse && first && !attach.length) {
+        reused = await this.enqueue(() => reuse.edit(text).then(() => true, () => false));
+        if (reused) return;
+      }
+      await this.post(text, replyTo, attach);
+    };
     if (parts.length) {
       const chunks = this.split(parts.join("\n\n"));
       const last = chunks.length - 1;
       if (footer && chunks[last]!.length + footer.length + 1 <= this.thread.maxLength) chunks[last] += `\n${footer}`;
       else if (footer) chunks.push(footer);
       // The first chunk replies to the message that asked.
-      for (const [i, chunk] of chunks.entries()) await this.post(chunk, i === 0 ? caller : null, i === chunks.length - 1 ? files : []);
+      for (const [i, chunk] of chunks.entries()) await say(chunk, i === 0 ? caller : null, i === chunks.length - 1 ? files : [], i === 0);
     } else if (footer && !this.verbose && turn.status !== "interrupted") {
-      await this.post(footer, caller, files);
+      await say(footer, caller, files, true);
     } else if (files.length) {
       await this.post("Files:", caller, files);
     }
@@ -682,7 +706,24 @@ export class ThreadSession {
       await this.post(`-# Not attached (over ${MAX_FILES} files / ${Math.floor(MAX_TOTAL_BYTES / 1024 / 1024)} MB per answer): ${skipped.map((s) => code(s)).join(", ")}`);
     }
     // Queued after any in-flight status send, so that message exists by now.
-    if (status) await this.enqueue(async () => status.msg?.delete()).catch(() => {});
+    if (status && !reused) await this.enqueue(async () => status.msg?.delete()).catch(() => {});
+  }
+
+  /**
+   * A message steered into the running turn. Verbose shows a line for it; the
+   * status line just counts it, so the user sees it there with no extra message.
+   */
+  private async noteQueued() {
+    const status = this.live;
+    if (this.verbose || !status) {
+      await this.post("Queued. It'll be read after the current step.");
+      return;
+    }
+    status.queued++;
+    // Refresh now, not at the next 3 s tick. Until the status line exists, the
+    // count shows up when it first appears.
+    status.at = 0;
+    void this.flushStatus();
   }
 
   /** Throttled: the status line while a turn runs (non-verbose). */
@@ -693,11 +734,12 @@ export class ThreadSession {
     // Quick answers need no status line; then refresh every 3 s.
     if (now - status.summary.startedAt < statusDelayFor(this.thread.surface) || now - status.at < 3000) return;
     status.at = now;
-    const body = status.summary.statusLine(now);
+    const queued = status.queued ? ` · ${status.queued === 1 ? "1 message" : `${status.queued} messages`} queued` : "";
+    const body = status.summary.statusLine(now) + queued;
     await this.enqueue(async () => {
       if (this.live !== status) return; // turn ended meanwhile
       if (status.msg) await status.msg.edit(body).catch(() => {});
-      else status.msg = await this.thread.send(body);
+      else status.msg = await this.thread.send(body, { replyTo: this.caller?.id ?? null });
     }).catch(() => {});
   }
 
@@ -732,6 +774,10 @@ export class ThreadSession {
       return;
     }
     if (this.approvals.has(r.id)) return;
+    if (this.turnUser && this.grants.has(this.turnUser)) {
+      this.client.respond(r.id, { decision: "accept" });
+      return;
+    }
     const p = r.params;
     const what =
       r.method === "item/commandExecution/requestApproval"
@@ -743,9 +789,11 @@ export class ThreadSession {
     const approval: Approval = { msg: null, title, resolved: false };
     this.approvals.set(r.id, approval);
 
-    // No "always" button: it would change hoocode's global config.
+    // "Always for me" is remembered by hoobot per user per bot (approvals.json in the
+    // instance dir), not written to hoocode's config, which is global.
     const options: Choice[] = [
       { label: "Allow once", value: "accept", style: "primary" },
+      { label: "Always for me", value: "always", style: "primary" },
       { label: "Deny", value: "decline", style: "danger" },
     ];
     const { msg, pick } = await this.enqueue(() =>
@@ -764,10 +812,21 @@ export class ThreadSession {
         await click.update(`${title.slice(0, 1800)}\n→ **Answered elsewhere.**`).catch(() => {});
         return;
       }
-      const chosen = options.find((o) => o.value === click.value) ?? options[1]!;
+      const chosen = options.find((o) => o.value === click.value) ?? options[2]!;
       approval.resolved = true;
-      this.client.respond(r.id, { decision: chosen.value });
-      await click.update(`${title.slice(0, 1800)}\n→ **${chosen.label}** by ${click.user}`);
+      if (chosen.value === "always") {
+        // Saved before answering: a failed write is logged, and the approval is still accepted.
+        try {
+          this.grants.add(click.userId);
+        } catch (err) {
+          error(`[${this.thread.id}] could not save the "always" grant for ${click.userId}`, err);
+        }
+        this.client.respond(r.id, { decision: "accept" });
+        await click.update(`${title.slice(0, 1800)}\n→ **Always allowed for ${click.user}**`);
+      } else {
+        this.client.respond(r.id, { decision: chosen.value });
+        await click.update(`${title.slice(0, 1800)}\n→ **${chosen.label}** by ${click.user}`);
+      }
     } catch {
       if (approval.resolved) return;
       approval.resolved = true;

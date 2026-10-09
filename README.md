@@ -469,10 +469,15 @@ work together. Each has its own hoocode conversation, model and settings.
   That channel and its threads work in that folder, with its own hoocode
   app-server. Two runs in one folder (channel and a thread) are allowed;
   coordinate as you would with two developers. Other channels use `HOO_WORKDIR`.
-- **Output:** while it works you see one status line
-  (`⏳ Working · 4 steps · 1m 20s · bash ...`). When it's done the status
-  line is removed and only the final answer is posted, with a short footer:
-  PR link, commit, files edited, steps, time and model.
+- **Output:** while it works you see one status line, a radar of the tool
+  names (never the commands):
+  `⏳ Working · 1m 20s · Shell ×2 › Read › Edit✗ › Shell… · 4 done · 1 failed`.
+  A failed step is marked ✗. A message you send mid-turn shows as
+  `· 1 message queued` on that line, not as a separate message.
+  That same message is then edited in place into the final answer, so a
+  turn is one message, with a short footer: PR link, commit, files edited,
+  steps, time and model. Answers with files attached are posted as a new
+  message, since an edit can't add files.
   `!verbose` shows every step and in-between message instead.
 - **Files:** files it writes in the work folder (`.html`, images, `.pdf`,
   `.md`, `.txt`, `.csv`, `.json`, Office files, `.zip`), creates with a shell
@@ -518,8 +523,11 @@ work together. Each has its own hoocode conversation, model and settings.
   asking, so the bot can finish a task end to end. Anyone on the allow
   list can run any command on this Mac through it.
 - `APPROVALS=ask`: they show **Allow once / Deny** buttons instead.
-  No click within 10 minutes means denied. There is no "Always" button;
-  it would change your global `~/.hoocode/hoo-config.json`.
+  No click within 10 minutes means denied.
+- **Always for me** (`ask` mode) is a third button. Clicking it lets that
+  user run approvals without buttons from then on, for this bot only. The
+  choice is stored in `approvals.json` in the bot's instance folder
+  (`GRANTS_FILE` to move it), not in your global `~/.hoocode/hoo-config.json`.
 
 How it works: on start the bot writes
 `workspace/.cortexcode/hoo-config.json`, which puts that folder in a

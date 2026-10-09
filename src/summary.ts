@@ -9,11 +9,21 @@ const PR_URL = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/g;
 /** `git commit` prints `[branch abc1234] subject`; `git push` prints `old..new  branch -> branch`. */
 const COMMIT_LINE = /^\[[^\]\s]+(?: \(root-commit\))? ([0-9a-f]{7,40})\]/gm;
 
+export type StepState = "running" | "ok" | "error";
+
+/** One tool call in this turn: its name only, never its arguments. */
+export interface ToolStep {
+  id: string;
+  tool: string;
+  state: StepState;
+}
+
 export class TurnSummary {
   readonly startedAt: number;
   private steps = new Set<string>();
   private failed = 0;
-  private current: string | null = null;
+  /** Every tool call this turn, in order, for the radar status line. */
+  private list: ToolStep[] = [];
   private prs = new Set<string>();
   private commits = new Set<string>();
   private files = new Set<string>();
@@ -39,7 +49,7 @@ export class TurnSummary {
     const what = stepLabel(item);
     if (!what) return;
     this.steps.add(item.id);
-    this.current = what;
+    this.list.push({ id: item.id, tool: what, state: "running" });
   }
 
   /** An `item/completed` item. */
@@ -48,9 +58,15 @@ export class TurnSummary {
       this.scan(item.text);
       return;
     }
-    if (!stepLabel(item)) return;
+    const what = stepLabel(item);
+    if (!what) return;
     this.steps.add(item.id);
-    if (item.status === "failed" || item.status === "declined" || (item.exitCode ?? 0) !== 0) this.failed++;
+    const error = item.status === "failed" || item.status === "declined" || (item.exitCode ?? 0) !== 0;
+    if (error) this.failed++;
+    const state: StepState = error ? "error" : "ok";
+    const open = this.list.findLast((s) => s.id === item.id && s.state === "running");
+    if (open) open.state = state;
+    else this.list.push({ id: item.id, tool: what, state });
     if (item.type === "commandExecution") {
       this.scan(item.aggregatedOutput);
       this.shell.push(String(item.command ?? ""), String(item.aggregatedOutput ?? ""));
@@ -64,10 +80,18 @@ export class TurnSummary {
     }
   }
 
-  /** e.g. "⏳ Working · 4 steps · 1m 20s · bash `bun test`" */
+  /**
+   * The live status line: elapsed time, then the radar chain of tool names
+   * (no arguments, no commands), then how many calls are done and how many
+   * failed. Words, not symbols alone, carry the counts.
+   * e.g. "⏳ Working · 1m 20s · Shell ×2 › Read › Edit✗ › Shell… · 4 done · 1 failed"
+   */
   statusLine(now = Date.now()): string {
-    const parts = ["⏳ Working", plural(this.steps.size, "step"), duration(now - this.startedAt)];
-    if (this.current) parts.push(this.current);
+    const parts = ["⏳ Working", duration(now - this.startedAt)];
+    if (this.list.length === 0) return parts.join(" · ");
+    parts.push(radarChain(this.list));
+    parts.push(`${this.list.filter((s) => s.state !== "running").length} done`);
+    if (this.failed) parts.push(`${this.failed} failed`);
     return parts.join(" · ");
   }
 
@@ -94,22 +118,43 @@ export class TurnSummary {
   }
 }
 
-/** Short label for a tool-ish item, or null for messages and reasoning. */
+/**
+ * The radar line for a turn's tool calls, names only: e.g. "grep › read ×4 › bash✗ › edit › bash…".
+ * Consecutive successful calls to the same tool collapse to `name ×N`; a failure
+ * never merges and ends in ✗; a running call ends in …. More than 8 segments keep
+ * the first 3 and last 2 with `…` between. Empty for no steps.
+ */
+export function radarChain(steps: readonly ToolStep[]): string {
+  const segs: string[] = [];
+  for (let i = 0; i < steps.length; ) {
+    const s = steps[i]!;
+    let n = 1;
+    if (s.state === "ok") {
+      while (i + n < steps.length && steps[i + n]!.state === "ok" && steps[i + n]!.tool === s.tool) n++;
+    }
+    let seg = n > 1 ? `${s.tool} ×${n}` : s.tool;
+    if (s.state === "error") seg += "✗";
+    if (s.state === "running") seg += "…";
+    segs.push(seg);
+    i += n;
+  }
+  const shown = segs.length > 8 ? [...segs.slice(0, 3), "…", ...segs.slice(-2)] : segs;
+  return shown.join(" › ");
+}
+
+/** Tool name for a tool-ish item (never its arguments), or null for messages and reasoning. */
 function stepLabel(item: any): string | null {
   switch (item?.type) {
     case "commandExecution":
-      return `bash ${code(truncate(String(item.command ?? ""), 60))}`;
+      return "Shell";
     case "fileChange":
-      return `edit ${code(truncate(basename(item.changes?.[0]?.path ?? "?"), 60))}`;
-    case "dynamicToolCall": {
-      const a = item.arguments ?? {};
-      const arg = a.command ?? a.path ?? a.file_path ?? a.query ?? a.pattern;
-      return arg ? `${item.tool} ${code(truncate(String(arg), 60))}` : String(item.tool);
-    }
+      return "Edit";
+    case "dynamicToolCall":
+      return String(item.tool);
     case "mcpToolCall":
       return `${item.server}/${item.tool}`;
     case "webSearch":
-      return `web search ${code(truncate(String(item.query ?? ""), 60))}`;
+      return "WebSearch";
     default:
       return null;
   }
