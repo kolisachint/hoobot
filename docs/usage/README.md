@@ -64,11 +64,17 @@ In Discord or Slack:
 - `@hoo list the files here`: starts a turn and answers in place.
 - Mention it or reply to it to continue; doing so while it is busy steers.
 - `!status` shows model, busy, thread id and **which server** (`Server:` line).
-- `!stop`, `!new`, `!model [part of name]`, `!verbose`, `!help`.
-- `!model` uses `model/list`. hoocode marks models outside your
-  `enabledModels` as `hidden`, so the dropdown shows only those (Discord
-  allows 25, Slack 100). Codex has its own hidden flags. The pick is sent as `model`
-  on every `turn/start` and saved in `LINKS_FILE`.
+- `!stop`, `!new`, `!model [number or part of name] [effort]`, `!effort [level]`, `!verbose`, `!help`.
+- `!model` uses `model/list` with `includeHidden: false`. hoocode marks models
+  outside your `enabledModels` as `hidden`; they are never offered. The list is
+  numbered, with each model's effort and, when hoocode provides it, its
+  category (Discord allows 25 in a dropdown, Slack 100). The pick is sent as `model` on `turn/start` and saved
+  in `LINKS_FILE`, with `effort` when one was set.
+- Effort: each scoped model's own effort applies unless set. `!effort <level>`
+  overrides it for the space (sent as `effort` on `turn/start`, only when set).
+  `HOOCODE_ARGS=--thinking …` is not needed and overrides every model's effort.
+  Effort selection needs hoocode ≥ 0.1.12; older servers ignore it.
+- hoocode upgrades: the bot restarts its app-server automatically once it is idle.
 
 To keep it running after the terminal closes (nohup, restart on crash),
 see [background.md](background.md).

@@ -448,10 +448,23 @@ work together. Each has its own hoocode conversation, model and settings.
   (Slack: the bot must be in the channel); without it, it works with no
   context (and logs why).
 - **Model per space:** `!model` lists hoocode's scoped models (your
-  `enabledModels`, set with the model picker in the hoocode TUI). The pick
-  applies from the next message, the conversation carries on, and it is
-  remembered across bot restarts. `!model <part of name>` also finds models
-  outside the scope.
+  `enabledModels`, set with the model picker in the hoocode TUI), numbered,
+  with each one's effort and, when hoocode provides it, its category. Pick from the list, or send
+  `!model 2` or `!model kimi`. Models outside the scope are never offered.
+  The pick applies from the next message, the conversation carries on, and
+  it is remembered across bot restarts.
+- **Effort:** each scoped model has its own effort, and that is what runs by
+  default. `!effort` shows this space's effort and the choices; `!effort high`
+  overrides it, and `!effort default` clears the override. `!model opus high`
+  picks a model and its effort at once. Picking a model without an effort
+  clears the override. Don't set `--thinking` in `HOOCODE_ARGS`: it overrides
+  every model's effort, and the bot warns at startup. Effort selection needs
+  hoocode ≥ 0.1.12; older servers ignore it.
+- **hoocode upgrades:** before a new turn, if the hoocode binary on disk has
+  changed since the bot started its app-server, the bot restarts that server
+  automatically once it is idle (nothing running). Conversations resume as before.
+- **Login errors:** when hoocode can't authenticate with a provider, the
+  reply says so and gives the fix: run `hoocode` on the host and `/login <provider>`.
 - **One folder per channel:** set `WORKSPACES=<channel id>=<folder>,...`.
   That channel and its threads work in that folder, with its own hoocode
   app-server. Two runs in one folder (channel and a thread) are allowed;
@@ -491,8 +504,9 @@ work together. Each has its own hoocode conversation, model and settings.
 | `!stop` | Stop the current run |
 | `!new` | Start a fresh conversation here, for everyone (deletes files sent here) |
 | `!status` | Model, busy or not, folder, thread, server |
-| `!model` | Pick this space's model from a dropdown |
-| `!model <part of name>` | Pick it directly, e.g. `!model kimi` |
+| `!model` | Pick this space's model from a numbered list (with effort and category) |
+| `!model <number or part of name> [effort]` | Pick it directly, e.g. `!model 2`, `!model kimi`, `!model opus high` |
+| `!effort [level]` | Show this space's effort and the choices, or set it, e.g. `!effort high`; `!effort default` clears it |
 | `!verbose` | Show every step here (again to turn off) |
 | `!help` | Show help |
 

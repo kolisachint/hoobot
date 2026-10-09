@@ -7,9 +7,11 @@
  * - `stdio:CMD ARGS...`: spawn a server and talk LF-delimited JSON on its pipes.
  */
 import { EventEmitter } from "node:events";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { log, error } from "./log.ts";
+import { dirname } from "node:path";
+import { log, error, warn } from "./log.ts";
 
 export type RequestId = number | string;
 
@@ -27,7 +29,8 @@ export class RpcError extends Error {
 
 interface Transport {
   send(message: unknown): void;
-  close(): void;
+  /** Resolves once the server side is gone (for stdio: its whole process group). */
+  close(): Promise<void>;
 }
 
 /** Thrown when a call passed its deadline without an answer. */
@@ -182,9 +185,11 @@ export class CodexClient extends EventEmitter {
     this.transport?.send({ id, result });
   }
 
-  close() {
-    this.transport?.close();
+  /** Resolves once the server is gone, so a caller can exit without leaving it behind. */
+  close(): Promise<void> {
+    const stopped = this.transport?.close() ?? Promise.resolve();
     this.shutdown("closed by client");
+    return stopped;
   }
 
   get isClosed() {
@@ -246,7 +251,10 @@ function openUnix(
       opened = true;
       resolve({
         send: (m) => ws.send(JSON.stringify(m)),
-        close: () => ws.close(),
+        close: () => {
+          ws.close();
+          return Promise.resolve();
+        },
       });
     };
     ws.onmessage = (e) => onMessage(typeof e.data === "string" ? e.data : String(e.data));
@@ -257,6 +265,154 @@ function openUnix(
   });
 }
 
+/** How long a stopped server gets to exit after SIGTERM before SIGKILL. */
+export const STOP_GRACE_MS = 3000;
+
+/** Process groups of stdio servers that may still be running. */
+const liveGroups = new Set<number>();
+
+/**
+ * A stdio server is its own process group, so when the bot is killed with
+ * SIGKILL (no shutdown, no exit hook) the server outlives it. The live groups
+ * are kept in a pidfile the bot owns, and the next start stops the ones that
+ * are still app-servers. Off unless `recoverOrphanServers` is called.
+ */
+let pidFile: string | null = null;
+
+function saveServerPids() {
+  if (!pidFile) return;
+  try {
+    if (liveGroups.size === 0) {
+      rmSync(pidFile, { force: true });
+      return;
+    }
+    mkdirSync(dirname(pidFile), { recursive: true });
+    writeFileSync(pidFile, [...liveGroups].join("\n") + "\n");
+  } catch (err) {
+    warn(`Can't record app-server pids in ${pidFile}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+function forgetGroup(pid: number) {
+  liveGroups.delete(pid);
+  saveServerPids();
+}
+
+/** A pid is an orphan only if it still leads its own group and its command line is an app-server. */
+function isOrphanServer(pid: number): boolean {
+  const ps = (field: string) =>
+    spawnSync("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
+  return Number(ps("pgid")) === pid && ps("command").includes("app-server");
+}
+
+/**
+ * Call once at startup, before any server is started. Stops the app-server
+ * groups an earlier run left behind (SIGTERM, then SIGKILL after the grace
+ * period), and starts tracking this run's groups in `path`. Returns the pids
+ * it stopped.
+ */
+export function recoverOrphanServers(path: string): number[] {
+  let pids: number[] = [];
+  try {
+    pids = readFileSync(path, "utf8").split(/\s+/).map(Number).filter((n) => Number.isInteger(n) && n > 1);
+  } catch {
+    // No pidfile: nothing was left behind.
+  }
+  pidFile = path;
+  const orphans = pids.filter(isOrphanServer);
+  for (const pid of orphans) {
+    liveGroups.add(pid);
+    signalGroup(pid, "SIGTERM");
+    reapGroup(pid);
+  }
+  saveServerPids();
+  if (orphans.length) onProcessExit();
+  return orphans;
+}
+
+/** Poll until the group is gone, then forget it; SIGKILL it once the grace period is over. */
+function reapGroup(pid: number) {
+  const deadline = Date.now() + STOP_GRACE_MS;
+  const check = () => {
+    if (!groupAlive(pid)) return forgetGroup(pid);
+    if (Date.now() >= deadline) {
+      signalGroup(pid, "SIGKILL");
+      return forgetGroup(pid);
+    }
+    setTimeout(check, 50).unref();
+  };
+  check();
+}
+
+/**
+ * `process.exit` skips `closeAll` (an uncaught exception, for one), so the
+ * servers would outlive the bot. On exit, signal whatever is still running.
+ */
+let exitHookSet = false;
+function onProcessExit() {
+  if (exitHookSet) return;
+  exitHookSet = true;
+  process.once("exit", () => {
+    for (const pid of liveGroups) signalGroup(pid, "SIGTERM");
+  });
+}
+
+/**
+ * Send `signal` to the child's process group. Nothing to signal is fine:
+ * ESRCH is an empty group, and macOS answers EPERM when a group holds only
+ * zombies, which are already dead.
+ */
+function signalGroup(pid: number, signal: NodeJS.Signals) {
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    // Gone already.
+  }
+}
+
+/** Whether any process is still signalable in the child's group (zombies don't count). */
+function groupAlive(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Stop a stdio server and everything it started. `hoocode` is a Node wrapper
+ * that runs the native app-server as its own child, so `child.kill()` stopped
+ * only the wrapper and left the server running. The child is spawned as its
+ * own process group (`detached`), so the whole group gets the signal: SIGTERM,
+ * then SIGKILL after `STOP_GRACE_MS` if anything is still alive.
+ */
+function stopGroup(child: ChildProcess): Promise<void> {
+  const pid = child.pid;
+  if (!pid) return Promise.resolve();
+  if (process.platform === "win32") {
+    child.kill();
+    return Promise.resolve();
+  }
+  signalGroup(pid, "SIGTERM");
+  return new Promise((resolve) => {
+    const deadline = Date.now() + STOP_GRACE_MS;
+    const check = () => {
+      if (!groupAlive(pid)) {
+        forgetGroup(pid);
+        return resolve();
+      }
+      if (Date.now() >= deadline) {
+        signalGroup(pid, "SIGKILL");
+        forgetGroup(pid);
+        return resolve();
+      }
+      setTimeout(check, 50);
+    };
+    check();
+  });
+}
+
 function openStdio(
   cmd: string,
   args: string[],
@@ -264,21 +420,38 @@ function openStdio(
   onMessage: (text: string) => void,
   onClose: (reason: string) => void,
 ): Transport {
-  const child: ChildProcessWithoutNullStreams = spawn(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
+  // `detached`: its own process group, so `stopGroup` reaches what it started.
+  // Stdio stays on pipes, so this doesn't change how the server talks to us.
+  // It also means a terminal Ctrl-C no longer reaches the server: the bot's
+  // shutdown (src/index.ts → closeAll) is what stops it.
+  const child: ChildProcessWithoutNullStreams = spawn(cmd, args, {
+    cwd,
+    stdio: ["pipe", "pipe", "pipe"],
+    detached: true,
+  });
+  if (child.pid) {
+    liveGroups.add(child.pid);
+    saveServerPids();
+    onProcessExit();
+  }
   createInterface({ input: child.stdout }).on("line", (line) => {
     if (line.trim()) onMessage(line);
   });
   child.stderr.on("data", (d) => {
     if (process.env.DEBUG === "1") process.stderr.write(`[app-server] ${d}`);
   });
-  child.on("exit", (code) => onClose(`app-server exited (${code})`));
+  child.on("exit", (code) => {
+    // The wrapper can exit while what it started lives on: clear its group too.
+    void stopGroup(child);
+    onClose(`app-server exited (${code})`);
+  });
   child.on("error", (err) => {
     error(`app-server process error: ${err.message}`);
     onClose(err.message);
   });
   return {
     send: (m) => child.stdin.write(JSON.stringify(m) + "\n"),
-    close: () => child.kill(),
+    close: () => stopGroup(child),
   };
 }
 

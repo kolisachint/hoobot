@@ -57,7 +57,7 @@ while (session.busy) {
   await Bun.sleep(300);
 }
 await Bun.sleep(500);
-session.close();
+await session.close();
 client.close();
 console.log(log.join("\n"));
 

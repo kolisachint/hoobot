@@ -62,7 +62,7 @@ const threadId = links.get("discord:e2e-thread")?.threadId;
 if (!threadId) throw new Error("no link written");
 
 // 2. Restart: a new client and session pick the same thread up again.
-session.close();
+await session.close();
 client.close();
 client = await connect();
 session = new ThreadSession(thread, client, links, () => {});
@@ -72,7 +72,7 @@ await waitFor("reply in resumed thread", () => log.slice(before).some((l) => l.s
 await waitFor("turn end", () => !session.busy);
 if (links.get("discord:e2e-thread")?.threadId !== threadId) throw new Error("resume started a new thread");
 
-session.close();
+await session.close();
 client.close();
 console.log(log.join("\n"));
 console.log(`\nOK (${clicks} approval click(s), thread ${threadId})`);
