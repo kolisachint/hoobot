@@ -10,6 +10,11 @@ export type Link = {
   threadId: string;
   /** Model picked with `!model` for this space; sent on every turn. */
   model?: string;
+  /**
+   * Effort set with `!effort` or `!model <m> <effort>`; sent on turns. Absent:
+   * the server applies the scoped model's own effort.
+   */
+  effort?: string;
   /** Last Discord message this conversation has read (context starts after it). */
   seen?: string;
 };

@@ -11,6 +11,7 @@ import { CodexClient } from "./codex-client.ts";
 import { health, isStuck, type SessionStatus } from "./health.ts";
 import { LinkStore } from "./links.ts";
 import { ThreadSession } from "./session.ts";
+import { binaryStamp, shouldRestartServer, spawnedBinary, type BinaryStamp } from "./hoocode-binary.ts";
 import { buildPrompt, type ContextMessage } from "./context.ts";
 import type { ChatSpace } from "./chat.ts";
 import {
@@ -33,22 +34,34 @@ function endpoint(): string {
   return `stdio:${config.hoocodeBin} app-server ${config.hoocodeArgs.join(" ")}`;
 }
 
-/** One app-server per folder, started on first use. */
-const apps = new Map<string, Promise<CodexClient>>();
+/**
+ * One app-server per folder, started on first use. `spawned` is the hoocode
+ * binary it was started from (stdio only), so a later upgrade can be seen.
+ */
+type AppServer = { client: Promise<CodexClient>; spawned: BinaryStamp | null };
+const apps = new Map<string, AppServer>();
 
-/** The app-server for `workdir`; reconnects after it drops. */
-function appServer(workdir: string): Promise<CodexClient> {
-  let app = apps.get(workdir);
-  if (app) return app;
-  app = (async () => {
+/** The hoocode binary the stdio server runs from, as it is on disk now. Null when not ours to restart. */
+function hoocodeOnDisk(): BinaryStamp | null {
+  const bin = spawnedBinary({ appServer: config.appServer, hoocodeBin: config.hoocodeBin });
+  return bin ? binaryStamp(bin) : null;
+}
+
+/** Start a server for `workdir` and remember what it was started from. */
+function startAppServer(workdir: string): AppServer {
+  const spawned = hoocodeOnDisk();
+  const client: Promise<CodexClient> = (async () => {
     // A stdio server runs in the work folder; a socket server has its own.
-    const client = await CodexClient.connect(
+    const c = await CodexClient.connect(
       endpoint(),
       { name: "hoobot", version: "0.1.0" },
       { cwd: workdir, requestTimeoutMs: config.requestTimeoutMs },
     );
-    log(`Connected to app-server ${client.endpoint} in ${workdir}`);
-    client.on("close", (reason: string) => {
+    log(`Connected to app-server ${c.endpoint} in ${workdir}${spawned ? ` (hoocode ${spawned.path})` : ""}`);
+    c.on("close", (reason: string) => {
+      // A server replaced on purpose is no longer in `apps`: its sessions were
+      // closed by the restart, and nothing else is ours to tear down.
+      if (apps.get(workdir)?.client !== client) return;
       error(`app-server for ${workdir} closed: ${reason}`);
       // Say what was still running, so the log explains the silence that
       // follows rather than leaving it to be guessed at.
@@ -59,18 +72,56 @@ function appServer(workdir: string): Promise<CodexClient> {
       }
       apps.delete(workdir);
     });
-    return client;
+    return c;
   })().catch((err) => {
     error(`Can't reach app-server for ${workdir}: ${err instanceof Error ? err.message : String(err)}`);
-    apps.delete(workdir);
+    if (apps.get(workdir)?.client === client) apps.delete(workdir);
     throw err;
   });
-  apps.set(workdir, app);
-  return app;
+  return { client, spawned };
+}
+
+/**
+ * hoocode was upgraded under a running server, so close it and let the next
+ * turn start the new build. Only when nothing is in flight on it: a turn
+ * keeps the old server until it ends, and the check runs again on the next
+ * call. Threads come back through the resume path (the server saved them).
+ */
+function restartIfStale(workdir: string, app: AppServer): boolean {
+  const current = hoocodeOnDisk();
+  const idle = ![...sessions.values()].some((s) => s.workdir === workdir && s.inFlight);
+  if (!shouldRestartServer({ spawned: app.spawned, current, idle })) return false;
+  log(`hoocode changed on disk; restarting the app-server for ${workdir} so the next turn runs the new build`);
+  apps.delete(workdir);
+  // Unsubscribe each thread first, so the server never sees a client that
+  // dropped the connection while still subscribed (that logs a warning).
+  const unsubscribed = [...sessions.values()].filter((s) => s.workdir === workdir).map((s) => s.close());
+  void Promise.all(unsubscribed)
+    .then(() => app.client)
+    .then((c) => c.close())
+    .catch(() => {});
+  return true;
+}
+
+/** The app-server for `workdir`; reconnects after it drops. */
+function appServer(workdir: string): Promise<CodexClient> {
+  let app = apps.get(workdir);
+  if (app && restartIfStale(workdir, app)) app = undefined;
+  if (!app) {
+    app = startAppServer(workdir);
+    apps.set(workdir, app);
+  }
+  return app.client;
 }
 
 async function getSession(space: ChatSpace, workdir: string): Promise<ThreadSession> {
-  const client = await appServer(workdir);
+  // The server can be replaced while this call waits for it; then take the new one.
+  let client: CodexClient;
+  let started: Promise<CodexClient>;
+  do {
+    started = appServer(workdir);
+    client = await started;
+  } while (apps.get(workdir)?.client !== started);
   const key = `${space.surface}:${space.id}`;
   let s = sessions.get(key);
   if (!s) {
@@ -134,7 +185,9 @@ export function helpText(label: string, menu: string): string {
     "- `!new`: start a fresh conversation here (for everyone; deletes files sent here)",
     "- `!status`: model, busy or not, folder",
     `- \`!model\`: pick the model here from ${menu} (from the next message; the conversation carries on)`,
-    "- `!model <part of name>`: pick it directly, e.g. `!model kimi`",
+    "- `!model <number or part of name> [effort]`: pick it directly, e.g. `!model 2`, `!model kimi`, `!model opus high`",
+    "  Only models in hoocode's scope are offered.",
+    "- `!effort [level]`: show this space's effort, or set it, e.g. `!effort high`; `!effort default` clears it",
     "- `!verbose`: show every step here (again to turn off)",
     "- `!help`: this message",
     "",
@@ -188,6 +241,8 @@ export async function handleCall(call: Call, help: string): Promise<void> {
       return session.toggleVerbose();
     case "!model":
       return session.chooseModel(arg);
+    case "!effort":
+      return session.chooseEffort(arg);
   }
 
   // One call at a time per space, so read positions advance in order.
@@ -251,7 +306,10 @@ export function sessionStatus(): SessionStatus[] {
   }));
 }
 
-/** Close every session and app-server. */export async function closeAll() {
-  for (const s of [...sessions.values()]) s.close();
-  await Promise.all([...apps.values()].map((app) => app.then((c) => c.close()).catch(() => {})));
+/** Close every session and app-server. */
+export async function closeAll() {
+  // Threads are unsubscribed before their server connection is closed.
+  const unsubscribed = [...sessions.values()].map((s) => s.close());
+  await Promise.all(unsubscribed);
+  await Promise.all([...apps.values()].map((app) => app.client.then((c) => c.close()).catch(() => {})));
 }

@@ -215,7 +215,7 @@ test("a real app-server that stops streaming mid-turn is recovered from", async 
     expect(thread.sent.join("\n")).toContain("Stopped waiting");
     // And it asked the server to stop burning tokens on the abandoned turn.
     expect(s.busy).toBe(false);
-    s.close();
+    await s.close();
     client.close();
   } finally {
     config.turnStallMs = wasStall;

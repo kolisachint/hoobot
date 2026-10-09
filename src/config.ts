@@ -2,7 +2,7 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { seedSkills } from "./skills.ts";
-import { log, error } from "./log.ts";
+import { log, error, warn } from "./log.ts";
 
 function optional(name: string): string | undefined {
   return process.env[name]?.trim() || undefined;
@@ -110,6 +110,12 @@ export const config = {
 };
 
 /**
+ * Pids of the stdio app-server groups this bot started. Kept next to the links
+ * file (one per bot), and read at startup to stop any a killed run left behind.
+ */
+export const appServerPidFile = `${config.linksFile}.app-servers.pid`;
+
+/**
  * How long a turn runs before its status line appears on this chat.
  *
  * Slack has no typing indicator for bots, so the status line is the first sign
@@ -141,6 +147,14 @@ if (config.slackAppToken && !config.slackBotToken) {
 if (surfaces().length === 0) {
   error("No chat to connect to. Set DISCORD_TOKEN, or SLACK_BOT_TOKEN and SLACK_APP_TOKEN (or both). Copy .env.example to .env and fill it in.");
   process.exit(1);
+}
+
+// `--thinking` fixes one effort for every model, which beats each scoped model's own.
+if (config.hoocodeArgs.some((a) => a === "--thinking" || a.startsWith("--thinking="))) {
+  warn(
+    "HOOCODE_ARGS has --thinking, which overrides the effort of every scoped model. " +
+      "Remove it: set the effort in hoocode's scoped models, or per space with !effort.",
+  );
 }
 
 if (config.appServer && config.workspaces.size) {

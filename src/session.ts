@@ -46,6 +46,8 @@ export class ThreadSession {
   private typingTimer: ReturnType<typeof setInterval> | null = null;
   /** Calls accepted by `beginCall` whose `endCall` hasn't run: each one is still working. */
   private pendingCalls = 0;
+  /** `ensureThread` calls still waiting on the server; counted so a restart waits for them. */
+  private resolving = 0;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   /** Fires when a running turn has said nothing for too long. */
   private stallTimer: ReturnType<typeof setTimeout> | null = null;
@@ -57,6 +59,11 @@ export class ThreadSession {
   private model: string | null = null;
   /** The model picked for this space (`!model`), saved in the link. */
   private chosenModel: string | null = null;
+  /**
+   * The effort picked for this space (`!model <m> <effort>` or `!effort`),
+   * saved in the link. Null: the server applies the scoped model's effort.
+   */
+  private chosenEffort: string | null = null;
   /** Last chat message the conversation has read; saved in the link. */
   private seenId: string | null = null;
   /** Whether the space had a conversation before this session opened. */
@@ -90,6 +97,14 @@ export class ThreadSession {
     return this.turnId !== null;
   }
 
+  /**
+   * A turn, a call still in its preamble, or an approval waiting on a person.
+   * The app-server is not replaced under any of these.
+   */
+  get inFlight() {
+    return this.busy || this.pendingCalls > 0 || this.resolving > 0 || [...this.approvals.values()].some((a) => !a.resolved);
+  }
+
   /** How long the running turn has gone without reporting anything. */
   get turnStalledMs(): number {
     if (!this.turnId || !this.lastTurnEventAt) return 0;
@@ -106,14 +121,21 @@ export class ThreadSession {
     this.ready ??= (async () => {
       const link = this.links.get(this.linkKey);
       this.chosenModel = link?.model ?? null;
+      this.chosenEffort = link?.effort ?? null;
       this.seenId = link?.seen ?? null;
       this.wasLinked = !!link;
       if (link) {
         try {
-          const res = await this.client.request("thread/resume", { threadId: link.threadId });
+          const res = await this.client.request("thread/resume", {
+            threadId: link.threadId,
+            ...(this.chosenEffort ? { effort: this.chosenEffort } : {}),
+          });
           this.adopt(res);
           return;
         } catch (err) {
+          // Closed under us (the app-server was replaced): the caller's command
+          // fails quietly here; a new session has its own conversation.
+          if (this.closed) throw err;
           error(`[${this.thread.id}] resume ${link.threadId} failed; starting fresh`, err);
           await this.post(`Couldn't reopen the earlier conversation (${code(errorText(err))}). Starting a new one.`);
           this.seenId = null;
@@ -125,13 +147,16 @@ export class ThreadSession {
       this.ready = null;
       throw err;
     });
-    return this.ready;
+    const ready = this.ready;
+    this.resolving++;
+    return ready.finally(() => this.resolving--);
   }
 
   private async startThread() {
     const params: Record<string, unknown> = {};
-    const model = this.chosenModel ?? config.model;
+    const model = await this.modelToSend();
     if (model) params.model = model;
+    if (this.chosenEffort) params.effort = this.chosenEffort;
     const res = await this.client.request("thread/start", params);
     this.adopt(res);
     this.saveLink();
@@ -142,8 +167,17 @@ export class ThreadSession {
     this.links.set(this.linkKey, {
       threadId: this.threadId,
       ...(this.chosenModel ? { model: this.chosenModel } : {}),
+      ...(this.chosenEffort ? { effort: this.chosenEffort } : {}),
       ...(this.seenId ? { seen: this.seenId } : {}),
     });
+  }
+
+  /**
+   * The `model` to send: this space's pick, else MODEL (see `envModel`).
+   * Otherwise none, so the server picks the scoped default and its effort.
+   */
+  private async modelToSend(): Promise<string | undefined> {
+    return this.chosenModel ?? (await envModel(this.client));
   }
 
   /** Read position for context: whether the space had a conversation, and its last read message. */
@@ -193,19 +227,22 @@ export class ThreadSession {
     try {
       const params: Record<string, unknown> = { threadId: this.threadId, input };
       // Sent every turn: the server ignores it when it's already the model,
-      // and it survives a bot restart or a server that forgot it.
-      // `config.model` counts too: MODEL is the bot's default, and a thread
-      // resumed from an older link keeps the model it was started with, so
-      // without this a changed MODEL would only reach new threads.
-      const want = this.chosenModel ?? config.model;
+      // and it survives a bot restart or a server that forgot it. Nothing is
+      // sent when neither a pick nor MODEL applies: the server then uses its
+      // scoped default, with that model's effort.
+      const want = await this.modelToSend();
       if (want) params.model = want;
+      // Only an override from `!effort` or `!model <m> <effort>`. Otherwise the
+      // scoped model's own effort applies.
+      if (this.chosenEffort) params.effort = this.chosenEffort;
       const res = await this.client.request("turn/start", params);
       if (want) this.model = want;
       this.beginTurn(res.turn.id);
       this.caller = caller ?? null;
       return true;
     } catch (err) {
-      await this.post(`**Not sent:** ${errorText(err)}`);
+      const hint = authHint(errorText(err));
+      await this.post(`**Not sent:** ${errorText(err)}${hint ? `\n\n${hint}` : ""}`);
       return false;
     }
   }
@@ -255,6 +292,7 @@ export class ThreadSession {
     const lines = [
       "**Status**",
       `- Model: ${code(this.chosenModel ?? this.model ?? "default")}${this.chosenModel && this.chosenModel !== this.model ? " (from the next message)" : ""}`,
+      ...(this.chosenEffort ? [`- Effort: ${code(this.chosenEffort)} (set in this space; \`!effort default\` clears it)`] : []),
       `- Busy: ${this.turnId ? "yes" : "no"}`,
       `- Folder: ${code(this.workdir)}`,
       `- Thread: ${code(this.threadId ?? "none")}`,
@@ -268,81 +306,140 @@ export class ThreadSession {
   }
 
   /**
-   * `!model` → a dropdown of the server's models (hoocode: your
-   * `enabledModels` scope). `!model kimi` → that model if one matches,
-   * else a dropdown of the matches. Takes effect from the next message;
-   * the conversation carries on.
+   * `!model`: the server's scoped models, numbered, as a dropdown.
+   * `!model <number or part of name> [effort]`: pick one directly, e.g.
+   * `!model 2`, `!model kimi`, `!model opus high`. Takes effect from the next
+   * message; the conversation carries on. Hidden models are never offered.
    */
-  async chooseModel(query = "") {
+  async chooseModel(arg = "") {
     await this.ensureThread();
+    const { query, effort } = splitEffortArg(arg);
     let models: ModelChoice[];
     try {
-      models = await this.listModels(query !== "");
+      models = await listScoped(this.client);
     } catch (err) {
       await this.post(`**Can't list models:** ${errorText(err)}`);
       return;
     }
-    const q = query.toLowerCase();
-    if (q) {
-      const exact = models.find((m) => m.value.toLowerCase() === q || m.value.toLowerCase().endsWith(`/${q}`));
-      if (exact) return this.setModel(exact.value);
-      const matches = models.filter((m) => m.value.toLowerCase().includes(q) || m.label.toLowerCase().includes(q));
-      if (matches.length === 1) return this.setModel(matches[0]!.value);
-      if (matches.length === 0) {
+    if (models.length === 0) {
+      await this.post(NO_SCOPED_MODELS);
+      return;
+    }
+    if (query) {
+      const found = findModels(models, query);
+      if (found.length === 0) {
         await this.post(`No model matches ${code(query)}. Send \`!model\` for the list.`);
         return;
       }
-      // Scoped models first.
-      models = [...matches.filter((m) => !m.hidden), ...matches.filter((m) => m.hidden)];
-    }
-    if (models.length === 0) {
-      await this.post("The server lists no models.");
-      return;
+      if (found.length === 1) {
+        await this.post(this.applyPick(found[0]!, effort));
+        return;
+      }
+      // Several matches: a dropdown of just those (numbers still count the full list).
+      models = found;
     }
     const current = this.chosenModel ?? this.model;
     const shown = models.slice(0, this.thread.maxChoices);
     const choices: Choice[] = shown.map((m) => ({
-      label: truncate(m.label, 75),
+      label: truncate(`${m.n}. ${m.label}${isCurrent(m, current) ? " (current)" : ""}`, 75),
       value: m.value.slice(0, 100),
-      description: m.label === m.value ? undefined : truncate(m.value, 75),
-      default: m.value === current || m.value.endsWith(`/${current}`),
+      description: truncate(modelDetail(m), 75),
+      default: isCurrent(m, current),
     }));
     const more = models.length > shown.length ? `\nShowing ${shown.length} of ${models.length}; narrow it with \`!model <part of name>\`.` : "";
-    const title = `**Model:** ${code(current ?? "default")}. Pick one for this thread (from the next message):${more}`;
+    const title =
+      `**Model:** ${code(current ?? "default")}${this.chosenEffort ? ` · effort ${code(this.chosenEffort)}` : ""}. ` +
+      `Pick one for this thread (from the next message), or send \`!model <number>\`:${more}`;
     const { msg, pick } = await this.enqueue(() => this.thread.choose(title, "menu", choices, 5 * 60_000, "Pick a model"));
     try {
       const picked = await pick;
-      this.applyModel(picked.value);
-      await picked.update(modelSetText(picked.value));
+      const m = models.find((x) => x.value.slice(0, 100) === picked.value);
+      await picked.update(m ? this.applyPick(m, effort) : `**Model:** ${code(picked.value)} (not found in the list; not changed)`);
     } catch {
       await msg.edit(`**Model:** ${code(this.chosenModel ?? this.model ?? "default")} (not changed)`).catch(() => {});
     }
   }
 
-  private async setModel(name: string) {
-    this.applyModel(name);
-    await this.post(modelSetText(name));
+  /**
+   * `!effort`: this space's effort, the scoped default and the choices.
+   * `!effort <level>`: override it from the next message, if the model
+   * supports that level. `!effort default`: drop the override.
+   */
+  async chooseEffort(arg = "") {
+    await this.ensureThread();
+    const level = arg.trim().toLowerCase();
+    let models: ModelChoice[];
+    try {
+      models = await listScoped(this.client);
+    } catch (err) {
+      await this.post(`**Can't list models:** ${errorText(err)}`);
+      return;
+    }
+    const name = this.chosenModel ?? this.model;
+    const label = name ?? "the default model";
+    const model = models.find((m) => isCurrent(m, name));
+    if (!level) {
+      const choices = model?.levels ?? EFFORTS;
+      await this.post(
+        [
+          `**Effort** for ${code(label)}`,
+          `- Set in this space: ${this.chosenEffort ? code(this.chosenEffort) : "none (the scoped default)"}`,
+          `- Scoped default: ${model?.effort ? code(model.effort) : "not known"}`,
+          `- Choices: ${choices.join(", ")}`,
+          "Set one with `!effort <level>`. `!effort default` drops this space's override.",
+        ].join("\n"),
+      );
+      return;
+    }
+    if (level === "default") {
+      this.applyEffort(null);
+      await this.post(`**Effort:** back to the scoped default for ${code(label)} from the next message.`);
+      return;
+    }
+    // An effort is pinned to the model it was checked against. With no model
+    // known (no pick, and the server gave none), there is nothing to pin it to.
+    if (!name) {
+      await this.post("**Effort:** no model is known for this conversation yet. Pick one with `!model` first.");
+      return;
+    }
+    const problem = effortProblem(level, model, label);
+    if (problem) {
+      await this.post(problem);
+      return;
+    }
+    this.applyEffort(level);
+    await this.post(`**Effort:** ${code(level)} for ${code(label)} from the next message. The conversation carries on.`);
   }
 
-  private applyModel(name: string) {
+  /**
+   * Apply a `!model` pick. Returns what to tell the user. Nothing changes when
+   * the effort doesn't fit the model. Without an effort, a previous override
+   * is cleared: choosing a model resets the effort.
+   */
+  private applyPick(m: ModelChoice, effort?: string): string {
+    const problem = effort ? effortProblem(effort, m, m.value) : null;
+    if (problem) return problem;
+    const cleared = !effort && this.chosenEffort !== null;
+    this.applyModel(m.value, effort ?? null);
+    return modelSetText(m.value, effort, cleared);
+  }
+
+  private applyModel(name: string, effort: string | null = null) {
     this.chosenModel = name;
+    this.chosenEffort = effort;
     this.saveLink();
   }
 
-  /** All pages of `model/list`. */
-  private async listModels(includeHidden: boolean): Promise<ModelChoice[]> {
-    const out: ModelChoice[] = [];
-    let cursor: string | undefined;
-    for (let page = 0; page < 10; page++) {
-      const res: any = await this.client.request("model/list", { includeHidden, ...(cursor ? { cursor } : {}) });
-      for (const m of res?.data ?? []) {
-        const value = String(m.model ?? m.id);
-        out.push({ value, label: String(m.displayName || value), hidden: !!m.hidden });
-      }
-      cursor = res?.nextCursor ?? undefined;
-      if (!cursor) break;
-    }
-    return includeHidden ? out : out.filter((m) => !m.hidden);
+  /**
+   * Set or clear this space's effort. An effort with no pinned model pins the
+   * thread's current model too, so the level is checked against the model it
+   * is then sent with.
+   */
+  private applyEffort(level: string | null) {
+    const pin = level ? (this.chosenModel ?? this.model) : null;
+    if (pin) this.chosenModel = pin;
+    this.chosenEffort = level;
+    this.saveLink();
   }
 
   /** Toggle the step-by-step view for this thread. */
@@ -355,17 +452,26 @@ export class ThreadSession {
     );
   }
 
-  close() {
-    if (this.closed) return;
+  /**
+   * Resolves once the server has been told (or has failed to be told). Callers
+   * that go on to close the connection wait on it; the others can ignore it.
+   */
+  close(): Promise<void> {
+    if (this.closed) return Promise.resolve();
     this.closed = true;
+    let unsubscribed = Promise.resolve();
     if (this.threadId) {
-      // Fire-and-forget, but not silent: unsubscribe failing means the server
-      // keeps pushing this thread's events at a client that has let go.
-      this.client
+      // Not silent: unsubscribe failing means the server keeps pushing this
+      // thread's events at a client that has let go.
+      unsubscribed = this.client
         .request("thread/unsubscribe", { threadId: this.threadId })
-        .catch((err) => warn(`[${this.thread.id}] unsubscribe on close failed: ${errorText(err)}`));
+        .then(
+          () => {},
+          (err) => warn(`[${this.thread.id}] unsubscribe on close failed: ${errorText(err)}`),
+        );
     }
     this.dispose();
+    return unsubscribed;
   }
 
   // ── Output to chat ─────────────────────────────────────────────────────────
@@ -555,6 +661,8 @@ export class ThreadSession {
     if (answer) parts.push(answer);
     if (turn.status === "failed") {
       parts.push(`**Error:**\n${"```"}\n${truncate(turn.error?.message ?? "the turn failed", 1500)}\n${"```"}`);
+      const hint = authHint(turn.error?.message ?? "");
+      if (hint) parts.push(hint);
     } else if (!answer && !this.verbose && turn.status === "completed") {
       parts.push("Done.");
     }
@@ -779,10 +887,166 @@ export class ThreadSession {
   }
 }
 
-type ModelChoice = { value: string; label: string; hidden: boolean };
+/** A scoped model, as `model/list` describes it. `n` is its 1-based place in the scope. */
+type ModelChoice = {
+  n: number;
+  value: string;
+  label: string;
+  /** The scoped model's own effort (`defaultReasoningEffort`). */
+  effort: string | null;
+  category: string | null;
+  /** Levels this model accepts. Absent when the server doesn't say. */
+  levels?: string[];
+};
 
-function modelSetText(name: string): string {
-  return `**Model:** ${code(name)} from the next message. The conversation carries on.`;
+/** Every reasoning level hoocode knows. Used when a model doesn't list its own. */
+const EFFORTS = ["off", "minimal", "low", "medium", "high", "xhigh"];
+
+const NO_SCOPED_MODELS =
+  "The server has no models in your scope, so there's nothing to pick. " +
+  "Turn models on in hoocode's `enabledModels`, then try again.";
+
+/** Every scoped (not hidden) model, in the user's scope order. */
+async function listScoped(client: CodexClient): Promise<ModelChoice[]> {
+  const out: ModelChoice[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < 10; page++) {
+    const res: any = await client.request("model/list", { includeHidden: false, ...(cursor ? { cursor } : {}) });
+    for (const m of res?.data ?? []) {
+      // An older server may ignore includeHidden. Hidden is outside the scope either way.
+      if (m.hidden) continue;
+      const value = String(m.model ?? m.id);
+      out.push({
+        n: out.length + 1,
+        value,
+        label: String(m.displayName || value),
+        effort: text(m.defaultReasoningEffort),
+        category: text(m.category),
+        levels: levelsOf(m.supportedReasoningEfforts),
+      });
+    }
+    cursor = res?.nextCursor ?? undefined;
+    if (!cursor) break;
+  }
+  return out;
+}
+
+/** The scoped list per connection, so MODEL is checked once, not on every turn. */
+const scopedByClient = new WeakMap<CodexClient, Promise<ModelChoice[]>>();
+
+function scopedOnce(client: CodexClient): Promise<ModelChoice[]> {
+  let p = scopedByClient.get(client);
+  if (!p) {
+    p = listScoped(client);
+    scopedByClient.set(client, p);
+    // A failed list is not remembered: the next turn asks again.
+    p.catch(() => scopedByClient.delete(client));
+  }
+  return p;
+}
+
+let warnedOutOfScope = false;
+
+/**
+ * MODEL, when hoocode scopes it in; otherwise nothing, and the server picks
+ * its scoped default. If the scope can't be read (an older hoocode without
+ * model/list, or a failed call), MODEL is sent as it is: the server rejects it
+ * when it is out of scope. A failed check is warned about on every turn; a
+ * MODEL that is out of scope is warned about once per process.
+ */
+async function envModel(client: CodexClient): Promise<string | undefined> {
+  const want = config.model;
+  if (!want) return undefined;
+  let scoped: ModelChoice[];
+  try {
+    scoped = await scopedOnce(client);
+  } catch (err) {
+    warn(`Can't check MODEL=${want} against hoocode's scope (${errorText(err)}); sending it as it is.`);
+    return want;
+  }
+  if (scoped.some((m) => m.value === want)) return want;
+  if (!warnedOutOfScope) {
+    const names = scoped.map((m) => m.value).join(", ") || "none";
+    warn(`MODEL=${want} is not one of hoocode's scoped models (${names}); ignoring it. Set MODEL to one of those, or leave it empty.`);
+  }
+  warnedOutOfScope = true;
+  return undefined;
+}
+
+/** `kimi high` → { query: "kimi", effort: "high" }. Only a trailing known level counts. */
+function splitEffortArg(arg: string): { query: string; effort?: string } {
+  const words = arg.trim().split(/\s+/).filter(Boolean);
+  const last = words.at(-1)?.toLowerCase();
+  if (words.length > 1 && last && EFFORTS.includes(last)) return { query: words.slice(0, -1).join(" "), effort: last };
+  return { query: words.join(" ") };
+}
+
+/**
+ * The models a `!model` query names. A number picks by place in the list, and
+ * a number out of range matches nothing (it is not read as part of a name).
+ * Otherwise an exact id or a part of the name. One exact hit wins; several
+ * partial hits all come back.
+ */
+function findModels(models: ModelChoice[], query: string): ModelChoice[] {
+  const q = query.toLowerCase();
+  if (/^\d+$/.test(q)) {
+    const byNumber = models[Number(q) - 1];
+    return byNumber ? [byNumber] : [];
+  }
+  const exact = models.find((m) => m.value.toLowerCase() === q || m.value.toLowerCase().endsWith(`/${q}`));
+  if (exact) return [exact];
+  return models.filter((m) => m.value.toLowerCase().includes(q) || m.label.toLowerCase().includes(q));
+}
+
+/** Whether `m` is the model `name` (a full id, or the id without its provider). */
+function isCurrent(m: ModelChoice, name: string | null | undefined): boolean {
+  return !!name && (m.value === name || m.value.endsWith(`/${name}`));
+}
+
+function modelDetail(m: ModelChoice): string {
+  return [m.value, m.effort ? `effort ${m.effort}` : null, m.category].filter(Boolean).join(" · ");
+}
+
+/** Why `level` can't be used with this model, or null when it can. */
+function effortProblem(level: string, model: ModelChoice | undefined, name: string): string | null {
+  // An empty list counts as not stated.
+  const allowed = model?.levels?.length ? model.levels : EFFORTS;
+  if (allowed.includes(level)) return null;
+  return `${code(level)} isn't an effort for ${code(name)}. Choices: ${allowed.map((e) => code(e)).join(", ")}.`;
+}
+
+function modelSetText(name: string, effort?: string, cleared = false): string {
+  const set = effort ? ` (effort ${code(effort)})` : "";
+  const back = cleared ? " Effort is back to the scoped default." : "";
+  return `**Model:** ${code(name)}${set} from the next message. The conversation carries on.${back}`;
+}
+
+function text(v: unknown): string | null {
+  return typeof v === "string" && v.trim() ? v : null;
+}
+
+/** `supportedReasoningEfforts` as level names. Accepts `{ reasoningEffort }` entries or bare strings. */
+function levelsOf(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const levels = v
+    .map((x) => (typeof x === "string" ? x : x?.reasoningEffort))
+    .filter((x): x is string => typeof x === "string" && x !== "");
+  return levels.length ? levels : undefined;
+}
+
+const AUTH_ERROR = /no api key|authentication failed|unauthorized/i;
+
+/**
+ * A short pointer when a failure is about logging in, not about the request.
+ * The provider is named only when the error says which one it is, in one of
+ * the forms hoocode uses: `provider: X`, `for "X"`, or
+ * `Authentication failed for "X"`. Otherwise the hint has no provider name.
+ */
+export function authHint(message: string): string | null {
+  if (!AUTH_ERROR.test(message)) return null;
+  const provider = /\bprovider:\s*([\w.-]+)/i.exec(message)?.[1] ?? /\bfor\s+"([^"]+)"/.exec(message)?.[1];
+  if (!provider) return "hoocode can't authenticate with the model's provider. Run `hoocode` on the host and `/login <provider>`.";
+  return `hoocode can't authenticate with ${provider}. Run \`hoocode\` on the host and \`/login ${provider}\`.`;
 }
 
 /** A progress line for a tool-ish item, or null for messages. */

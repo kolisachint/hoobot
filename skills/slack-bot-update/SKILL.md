@@ -45,7 +45,7 @@ HOO_PATHS() { bash "${HOO_SKILLS:-${HOO_WORKDIR:-$HOME/.hoobot/runtime/shared/wo
 | `PEER_TURNS` | Answers a peer gets per thread before asking a human. Default 2. |
 | `ALLOWED_USER_IDS` | Mixed Discord digits and Slack `U…` ids. Empty = won't start. |
 | `MODEL` | Per bot default; `!model` overrides per thread. **Never leave it empty to "use the default":** that default belongs to a subscription that can lapse, and the bot then sits busy forever on a model call that never answers — while `/healthz` still reports `ok`. Pin a model with working credentials. |
-| `HOOCODE_ARGS` | Passed to `hoocode app-server`. `--thinking high` is the effort knob (off, minimal, low, medium, high, xhigh). Only used when `APP_SERVER` is empty. |
+| `HOOCODE_ARGS` | Passed to `hoocode app-server`. Leave it empty: effort comes from hoocode's scoped models, and `!effort <level>` overrides it per thread. Don't pass `--thinking`: it overrides every model's effort. Only used when `APP_SERVER` is empty. |
 | `LINKS_FILE` | **One per bot.** Sharing it makes two bots fight over the same threads. |
 | `HOO_WORKDIR` | Share it between bots on purpose — that's how skills propagate. |
 | `HEALTH_PORT` | Unique per bot (8787, 8788…). `off` disables. |

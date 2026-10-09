@@ -5,12 +5,13 @@
  * - Every channel and thread is a shared space with its own hoocode conversation.
  * - Mention the bot (or, on Discord, reply to it) → it reads what was said
  *   since it last looked (up to 30 messages) and answers right there.
- * - Commands: !stop  !new  !status  !model [name]  !verbose  !help
+ * - Commands: !stop  !new  !status  !model [number|name] [effort]  !effort [level]  !verbose  !help
  * - Each channel in WORKSPACES works in its own folder with its own app-server.
  * - Discord runs when DISCORD_TOKEN is set; Slack when SLACK_BOT_TOKEN and
  *   SLACK_APP_TOKEN are. Both share the app-servers and the links file.
  */
-import { allWorkdirs, config, prepareWorkspace, surfaces } from "./config.ts";
+import { allWorkdirs, appServerPidFile, config, prepareWorkspace, surfaces } from "./config.ts";
+import { recoverOrphanServers } from "./codex-client.ts";
 import { closeAll, sessionStatus } from "./core.ts";
 import { health, startHealthServer } from "./health.ts";
 import { INBOX_DIRS, pruneInbox } from "./inbound.ts";
@@ -33,6 +34,9 @@ setInterval(prune, 60 * 60 * 1000).unref();
 log(`Working folder: ${config.workdir}`);
 for (const [channel, dir] of config.workspaces) log(`  channel ${channel} → ${dir}`);
 log(`Allowed users: ${[...config.allowedUserIds].join(", ")}`);
+// A previous run killed with SIGKILL may have left app-servers running.
+const orphans = recoverOrphanServers(appServerPidFile);
+if (orphans.length) log(`Stopped ${orphans.length} app-server group(s) left by an earlier run: ${orphans.join(", ")}`);
 
 const stops: (() => Promise<void>)[] = [];
 const healthServer = startHealthServer(health, sessionStatus);
