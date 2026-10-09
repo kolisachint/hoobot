@@ -1,6 +1,9 @@
 // ThreadSession output with a fake app-server and a fake chat space.
 import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 process.env.DISCORD_TOKEN ??= "x";
 process.env.ALLOWED_USER_IDS ??= "1";
@@ -12,6 +15,7 @@ const { ThreadSession } = await import("../src/session.ts");
 const { authHint } = await import("../src/session.ts");
 const { LinkStore } = await import("../src/links.ts");
 const { config } = await import("../src/config.ts");
+const { Grants } = await import("../src/grants.ts");
 
 class FakeServer extends EventEmitter {
   endpoint = "fake";
@@ -87,10 +91,18 @@ function fakeThread(pick?: string) {
   const replies: (string | null)[] = [];
   const uploads: string[][] = [];
   const typing: number[] = [];
-  const posted = (text: string) => ({
-    edit: async (t: string) => void (sent[sent.indexOf(text)] = t),
-    delete: async () => void deleted.push(text),
-  });
+  // Tracks its own text: a second edit still finds the message it changed.
+  const posted = (text: string) => {
+    let current = text;
+    return {
+      edit: async (t: string) => {
+        const at = sent.indexOf(current);
+        if (at >= 0) sent[at] = t;
+        current = t;
+      },
+      delete: async () => void deleted.push(current),
+    };
+  };
   const thread = {
     id: "d1",
     surface: "discord" as const,
@@ -116,7 +128,7 @@ function fakeThread(pick?: string) {
       sent.push(text);
       if (kind === "menu") menus.push({ options: choices });
       const pickP = pick
-        ? Promise.resolve({ value: pick, user: "tester", update: async (t: string) => void sent.push(t) })
+        ? Promise.resolve({ value: pick, user: "tester", userId: "U-tester", update: async (t: string) => void sent.push(t) })
         : Promise.reject(new Error("timeout"));
       pickP.catch(() => {});
       return { msg: posted(text), pick: pickP };
@@ -663,7 +675,7 @@ test("typing pauses while an approval waits on a person, then resumes", async ()
   thread.choose = async (text: string, kind: string, choices: any[]) => {
     thread.sent.push(text);
     // The code calls `update` on the pick's resolution, not on the message.
-    const click = { value: "accept", user: "tester", update: async () => {} };
+    const click = { value: "accept", user: "tester", userId: "U-tester", update: async () => {} };
     return { msg: { edit: async () => {}, update: async () => {} }, pick: pickP.then(() => click) };
   };
   const s = new ThreadSession(thread, server as any, new LinkStore(linksPath("tya")), () => {});
@@ -683,12 +695,122 @@ test("typing pauses while an approval waits on a person, then resumes", async ()
   s.endCall();
   expect((s as any).typingTimer).toBeNull();
   expect(thread.typing.length).toBe(before);
-  release({ value: "accept", user: "tester" });
+  release({ value: "accept", user: "tester", userId: "U-tester" });
   await tick();
   expect(thread.typing.length).toBeGreaterThan(before); // resumed
   server.notify("turn/completed", { turn: { id: "u1", status: "completed" } });
   await tick();
   s.close();
+});
+
+// ── Allow always for me ──────────────────────────────────────────────────────
+
+/** A thread whose approval buttons are answered by `thread.answer`; counts how many were shown. */
+function askingThread() {
+  const thread: any = fakeThread();
+  thread.prompts = 0;
+  thread.answer = { value: "accept", userId: "U-A", user: "tester" };
+  thread.choose = async (text: string) => {
+    thread.prompts++;
+    thread.sent.push(text);
+    const answer = thread.answer;
+    return {
+      msg: { edit: async () => {}, update: async () => {} },
+      pick: Promise.resolve({ ...answer, update: async (t: string) => void thread.sent.push(t) }),
+    };
+  };
+  return thread;
+}
+
+const approvalRequest = (id: string) => ({
+  id,
+  method: "item/commandExecution/requestApproval",
+  params: { threadId: "t1", command: "rm -rf build" },
+});
+
+test("Always for me: remembered, so that user's later approvals are accepted with no new message", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "hoobot-grants-"));
+  const server = new FakeServer();
+  const responses: { id: string; result: any }[] = [];
+  (server as any).respond = (id: string, result: any) => void responses.push({ id, result });
+  const thread = askingThread();
+  thread.answer = { value: "always", userId: "U-A", user: "tester" };
+  const s = new ThreadSession(thread, server as any, new LinkStore(linksPath("grant-a")), () => {});
+  s.grants = new Grants(join(dir, "approvals.json"));
+  try {
+    await s.prompt("turn one", [], { id: "m1", userId: "U-A" });
+    server.emit("request", approvalRequest("r1"));
+    await tick();
+    expect(thread.prompts).toBe(1);
+    expect(responses).toContainEqual({ id: "r1", result: { decision: "accept" } });
+    expect(thread.sent.some((m: string) => m.endsWith("→ **Always allowed for tester**"))).toBe(true);
+    expect(s.grants.has("U-A")).toBe(true);
+    server.notify("turn/completed", { turn: { id: "u1", status: "completed" } });
+    await tick();
+
+    await s.prompt("turn two", [], { id: "m2", userId: "U-A" });
+    const sentBefore = thread.sent.length;
+    server.emit("request", approvalRequest("r2"));
+    await tick();
+    expect(responses).toContainEqual({ id: "r2", result: { decision: "accept" } });
+    expect(thread.prompts).toBe(1); // no buttons the second time
+    expect(thread.sent.length).toBe(sentBefore); // and no message at all
+    server.notify("turn/completed", { turn: { id: "u1", status: "completed" } });
+    await tick();
+  } finally {
+    s.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Always for me: a different user still gets the buttons", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "hoobot-grants-"));
+  const server = new FakeServer();
+  const responses: { id: string; result: any }[] = [];
+  (server as any).respond = (id: string, result: any) => void responses.push({ id, result });
+  const thread = askingThread();
+  const s = new ThreadSession(thread, server as any, new LinkStore(linksPath("grant-b")), () => {});
+  s.grants = new Grants(join(dir, "approvals.json"));
+  try {
+    s.grants.add("U-A");
+    await s.prompt("from someone else", [], { id: "m1", userId: "U-B" });
+    thread.answer = { value: "decline", userId: "U-B", user: "other" };
+    server.emit("request", approvalRequest("r1"));
+    await tick();
+    expect(thread.prompts).toBe(1);
+    expect(responses).toContainEqual({ id: "r1", result: { decision: "decline" } });
+    server.notify("turn/completed", { turn: { id: "u1", status: "completed" } });
+    await tick();
+  } finally {
+    s.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Always for me: a granted user steering someone else's turn does not hand their grant to it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "hoobot-grants-"));
+  const server = new FakeServer();
+  const responses: { id: string; result: any }[] = [];
+  (server as any).respond = (id: string, result: any) => void responses.push({ id, result });
+  const thread = askingThread();
+  const s = new ThreadSession(thread, server as any, new LinkStore(linksPath("grant-steer")), () => {});
+  s.grants = new Grants(join(dir, "approvals.json"));
+  try {
+    s.grants.add("U-B");
+    // A (no grant) starts the turn; B (granted) steers it while it runs.
+    await s.prompt("A starts", [], { id: "m1", userId: "U-A" });
+    await s.prompt("B steers", [], { id: "m2", userId: "U-B" });
+    thread.answer = { value: "decline", userId: "U-A", user: "alice" };
+    server.emit("request", approvalRequest("r1"));
+    await tick();
+    expect(thread.prompts).toBe(1); // buttons still shown: the turn belongs to A
+    expect(responses).toContainEqual({ id: "r1", result: { decision: "decline" } });
+    server.notify("turn/completed", { turn: { id: "u1", status: "completed" } });
+    await tick();
+  } finally {
+    s.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ── Status-line delay ────────────────────────────────────────────────────────
@@ -794,4 +916,56 @@ test("!new during a turn stops its typing", async () => {
   await s.newSession();
   expect((s as any).typingTimer).toBeNull();
   s.close();
+});
+
+// ── One message per turn: the status line becomes the answer ────────────────
+
+test("a non-verbose turn that showed its status line ends with one message: the answer", async () => {
+  const was = config.statusDelayMs;
+  config.statusDelayMs = 0;
+  try {
+    const server = new FakeServer();
+    const thread: any = fakeThread();
+    const s = new ThreadSession(thread, server as any, new LinkStore(linksPath("one-msg")), () => {});
+    await s.prompt("do it", [], { id: "m1" });
+    server.notify("item/started", { item: { type: "commandExecution", id: "c1", command: "gh pr create" } });
+    await new Promise((r) => setTimeout(r, 1700)); // the status line goes up
+    expect(thread.sent.some((m: string) => m.startsWith("⏳ Working"))).toBe(true);
+    server.notify("item/completed", {
+      item: { type: "commandExecution", id: "c1", command: "gh pr create", status: "completed", exitCode: 0, aggregatedOutput: "" },
+    });
+    server.notify("item/completed", { item: { type: "agentMessage", id: "m2", text: "Opened the PR." } });
+    server.notify("turn/completed", { turn: { id: "u1", status: "completed" } });
+    await tick();
+    s.close();
+    expect(thread.sent).toHaveLength(1);
+    expect(thread.sent[0]).toStartWith("Opened the PR.\n-# ");
+    expect(thread.sent[0]).toEndWith("· `test-model`");
+    expect(thread.deleted).toHaveLength(0);
+  } finally {
+    config.statusDelayMs = was;
+  }
+});
+
+test("steering a turn with a visible status line posts no Queued message; the status counts it", async () => {
+  const was = config.statusDelayMs;
+  config.statusDelayMs = 0;
+  try {
+    const server = new FakeServer();
+    const thread: any = fakeThread();
+    const s = new ThreadSession(thread, server as any, new LinkStore(linksPath("steer-q")), () => {});
+    await s.prompt("do it");
+    server.notify("item/started", { item: { type: "commandExecution", id: "c1", command: "sleep 9" } });
+    await new Promise((r) => setTimeout(r, 1700));
+    expect(thread.sent.some((m: string) => m.startsWith("⏳ Working"))).toBe(true);
+    await s.prompt("also check the tests"); // a turn is running: this steers it
+    await tick();
+    expect(thread.sent.some((m: string) => m.includes("Queued."))).toBe(false);
+    expect(thread.sent.some((m: string) => m.endsWith(" · 1 message queued"))).toBe(true);
+    server.notify("turn/completed", { turn: { id: "u1", status: "completed" } });
+    await tick();
+    s.close();
+  } finally {
+    config.statusDelayMs = was;
+  }
 });

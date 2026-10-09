@@ -281,7 +281,10 @@ export async function handleCall(call: Call, help: string): Promise<void> {
         author: call.author,
         text: text || "(see the attached files)",
     });
-    if (await session.prompt(prompt, imageInputs(saved), { id: call.messageId })) session.markSeen(call.messageId);
+    if (await session.prompt(prompt, imageInputs(saved), {
+      id: call.messageId,
+      userId: call.peer ? undefined : call.userId,
+    })) session.markSeen(call.messageId);
     });
   } finally {
     // When no turn came of it (the preamble threw, or turn/start was
