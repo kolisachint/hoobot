@@ -181,6 +181,42 @@ test("verbose: in-between messages and the step list are shown", async () => {
   expect(thread.sent.some((m) => m.startsWith("Opened the PR."))).toBe(true);
 });
 
+test("verbose: a TodoWrite completion shows a live todo checklist, not a raw command", async () => {
+  const server = new FakeServer();
+  const thread = fakeThread();
+  const s = new ThreadSession(thread, server as any, new LinkStore(linksPath("todos")), () => {});
+  await s.toggleVerbose();
+  thread.sent.length = 0;
+  await s.prompt("do it");
+  server.notify("item/completed", {
+    item: {
+      type: "dynamicToolCall",
+      id: "t1",
+      tool: "TodoWrite",
+      arguments: {
+        todos: [
+          { content: "write the code", status: "completed" },
+          { content: "run the tests", status: "in_progress" },
+          { content: "update the docs", status: "pending" },
+        ],
+      },
+      status: "completed",
+    },
+  });
+  server.notify("item/completed", { item: { type: "agentMessage", id: "m1", text: "Halfway there." } });
+  server.notify("item/completed", { item: { type: "agentMessage", id: "m2", text: "All done." } });
+  await tick();
+  server.notify("turn/completed", { turn: { id: "u1", status: "completed" } });
+  await tick();
+  s.close();
+  const progress = thread.sent.find((m) => m.includes("- [x]"));
+  expect(progress).toContain("- [x] write the code");
+  expect(progress).toContain("- [~] run the tests");
+  expect(progress).toContain("- [ ] update the docs");
+  expect(thread.sent.some((m) => m.includes("TodoWrite"))).toBe(false);
+  expect(thread.sent.some((m) => m.startsWith("All done."))).toBe(true);
+});
+
 test("a failed turn posts the error and the footer", async () => {
   const server = new FakeServer();
   const thread = fakeThread();

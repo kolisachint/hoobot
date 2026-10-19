@@ -192,7 +192,7 @@ export function helpText(label: string, menu: string): string {
     "- `!help`: this message",
     "",
     "Calling me while I'm busy steers the current run.",
-    "While I work you see one status line; then the answer with a short",
+    "While I work you see a live todo list and one status line; then the answer with a short",
     "summary (PR, commits, files, steps, time, model).",
     ...(config.approvals === "ask" ? ["Commands that change files or run shell ask for approval with buttons."] : []),
   ].join("\n");

@@ -24,6 +24,30 @@ test("WORKSPACES maps channels to folders; others use HOO_WORKDIR", () => {
   }
 });
 
+test("prompts require a todo list first, and pre-rule prompts upgrade", async () => {
+  const { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { dirname, join } = await import("node:path");
+  const { prepareWorkspace, chatPrompt, systemPrompt } = await import("../src/config.ts");
+  const dir = mkdtempSync(join(tmpdir(), "hoobot-prompt-"));
+  try {
+    prepareWorkspace(dir);
+    const promptPath = join(dir, ".cortexcode", "modes", "discord", "system.md");
+    expect(readFileSync(promptPath, "utf8")).toContain("TodoWrite");
+    expect(chatPrompt(false, ["slack"])).toContain("even a tiny task gets at least one todo");
+    // A workspace with the pre-rule prompt gets the rule on next boot.
+    writeFileSync(promptPath, systemPrompt(false, true, true, false));
+    prepareWorkspace(dir);
+    expect(readFileSync(promptPath, "utf8")).toContain("TodoWrite");
+    // A person's own prompt is left alone.
+    writeFileSync(promptPath, "# mine\n\nBe nice.");
+    prepareWorkspace(dir);
+    expect(readFileSync(promptPath, "utf8")).toBe("# mine\n\nBe nice.");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("prepareWorkspace writes the tool names hoocode 0.1.12 uses, and rewrites the old lists", async () => {
   const { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");

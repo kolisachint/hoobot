@@ -77,6 +77,22 @@ export function describeTool(name: string, args: Record<string, any> = {}): stri
   }
 }
 
+/**
+ * A live todo checklist for progress and status messages, e.g.
+ * `- [x] write the tests`, `- [~] fix the bug`, `- [ ] update the docs`.
+ * `completed` maps to `x`, `in_progress` to `~`, anything else to a blank.
+ * Empty input renders nothing.
+ */
+export function formatTodos(todos: { content: string; status: string }[], max = 6): string[] {
+  if (todos.length === 0) return [];
+  const rows = todos.slice(0, max).map((t) => {
+    const mark = t.status === "completed" ? "x" : t.status === "in_progress" ? "~" : " ";
+    return `- [${mark}] ${truncate(String(t.content ?? ""), 80)}`;
+  });
+  if (todos.length > max) rows.push(`-# …and ${todos.length - max} more`);
+  return rows;
+}
+
 /** Plain text of an assistant message's text blocks. */
 export function assistantText(message: any): string {
   if (!message || !Array.isArray(message.content)) return "";
