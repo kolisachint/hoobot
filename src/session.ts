@@ -10,7 +10,7 @@ import { config, statusDelayFor } from "./config.ts";
 import { error, log, warn } from "./log.ts";
 import type { ChatSpace, Choice, Posted } from "./chat.ts";
 import { idOrder } from "./context.ts";
-import { code, describeTool, splitMessage, truncate } from "./format.ts";
+import { code, describeTool, formatTodos, splitMessage, truncate } from "./format.ts";
 import { CodexClient, RpcError, userInput, type Notification, type RequestId, type ServerRequest } from "./codex-client.ts";
 import type { LinkStore } from "./links.ts";
 import { TurnSummary } from "./summary.ts";
@@ -35,6 +35,8 @@ export class ThreadSession {
   private threadId: string | null = null;
   private turnId: string | null = null;
   private tools: ToolLine[] = [];
+  /** The running turn's todo checklist, from its TodoWrite calls. Shown live, never as tool lines. */
+  private todos: { content: string; status: string }[] = [];
   private progressMsg: Posted | null = null;
   private progressDirty = false;
   private progressTimer: ReturnType<typeof setInterval>;
@@ -244,7 +246,12 @@ export class ThreadSession {
       // Only an override from `!effort` or `!model <m> <effort>`. Otherwise the
       // scoped model's own effort applies.
       if (this.chosenEffort) params.effort = this.chosenEffort;
-      const res = await this.client.request("turn/start", params);
+      // The nudge rides the new turn's input, not steers: a steer is a
+      // message to the running turn, which already has its list.
+      const res = await this.client.request("turn/start", {
+        ...params,
+        input: userInput(text ? `${text}\n\n${promptTodo}` : promptTodo, images),
+      });
       if (want) this.model = want;
       this.beginTurn(res.turn.id);
       this.caller = caller ?? null;
@@ -460,7 +467,7 @@ export class ThreadSession {
     await this.post(
       this.verbose
         ? "**Verbose on:** every step and message is shown. `!verbose` again to turn it off."
-        : "**Verbose off:** a status line while working, then the final answer.",
+        : "**Verbose off:** a live todo list and a status line while working, then the final answer.",
     );
   }
 
@@ -508,6 +515,7 @@ export class ThreadSession {
     // busy — every later message queued behind a turn that never existed.
     turnLog.begin(this.workdir, this.linkKey);
     this.tools = [];
+    this.todos = [];
     this.progressMsg = null;
     this.live = { summary: new TurnSummary(), msg: null, at: 0, queued: 0 };
     this.answer = null;
@@ -597,6 +605,12 @@ export class ThreadSession {
 
       case "item/started": {
         this.live?.summary.started(p.item);
+        const todos = todoItems(p.item);
+        if (todos) {
+          this.todos = todos;
+          this.progressDirty = true;
+          break;
+        }
         const tool = toolLine(p.item);
         if (tool) {
           this.tools.push(tool);
@@ -608,6 +622,12 @@ export class ThreadSession {
       case "item/completed": {
         const item = p.item;
         this.live?.summary.completed(item);
+        const todos = todoItems(item);
+        if (todos) {
+          this.todos = todos;
+          this.progressDirty = true;
+          break;
+        }
         if (item.type === "agentMessage" && item.text?.trim() && !this.verbose) {
           // Only the last message of the turn is posted (finishTurn).
           this.answer = item.text;
@@ -735,7 +755,7 @@ export class ThreadSession {
     if (now - status.summary.startedAt < statusDelayFor(this.thread.surface) || now - status.at < 3000) return;
     status.at = now;
     const queued = status.queued ? ` · ${status.queued === 1 ? "1 message" : `${status.queued} messages`} queued` : "";
-    const body = status.summary.statusLine(now) + queued;
+    const body = [...formatTodos(this.todos), status.summary.statusLine(now) + queued].join("\n");
     await this.enqueue(async () => {
       if (this.live !== status) return; // turn ended meanwhile
       if (status.msg) await status.msg.edit(body).catch(() => {});
@@ -746,14 +766,19 @@ export class ThreadSession {
   /** Tool activity as one message, edited in place (throttled). */
   private async flushProgress() {
     if (!this.verbose) return this.flushStatus();
-    if (!this.progressDirty || this.tools.length === 0) return;
+    if (!this.progressDirty || (this.tools.length === 0 && this.todos.length === 0)) return;
     this.progressDirty = false;
+    // Read before the reset: messages queued while quiet still count once
+    // verbose is back on (e.g. `!verbose` mid-turn).
+    const queued = this.live?.queued ?? 0;
+    if (this.live) this.live.queued = 0;
     // Words, not just symbols, so state doesn't rely on colour or icon shape.
     const label = { running: "⏳ running", ok: "✅ done", error: "❌ failed", declined: "🚫 denied" } as const;
     const lines = this.tools.slice(-15).map((t) => `${label[t.state]} · ${t.text}`);
     const hidden = this.tools.length - 15;
     if (hidden > 0) lines.unshift(`*…${hidden} earlier steps*`);
-    const body = lines.join("\n").slice(-(this.thread.maxLength - 100));
+    if (queued > 0) lines.push(`-# (${queued} new)`);
+    const body = [...formatTodos(this.todos), ...lines].join("\n").slice(-(this.thread.maxLength - 100));
     await this.enqueue(async () => {
       if (this.progressMsg) await this.progressMsg.edit(body).catch(() => {});
       else this.progressMsg = await this.thread.send(body);
@@ -1108,6 +1133,27 @@ export function authHint(message: string): string | null {
   return `hoocode can't authenticate with ${provider}. Run \`hoocode\` on the host and \`/login ${provider}\`.`;
 }
 
+/**
+ * Standing instruction sent with every new turn, so the live checklist has
+ * something to show: keep the turn's todos current, creating at least one
+ * todo first even for a quick task.
+ */
+export const promptTodo =
+  "Keep a live todo list with TodoWrite for this task: create at least one todo first, even for a quick task, and update each todo's status (in progress, completed) as you work.";
+
+/**
+ * A TodoWrite/Todo call's checklist, or null when the item isn't one (or
+ * carries no list). The caller stores it as the live todos; `toolLine`
+ * stays quiet for these, so no raw command line is shown for them.
+ */
+function todoItems(item: any): { content: string; status: string }[] | null {
+  if (item?.type !== "dynamicToolCall") return null;
+  if (item.tool !== "TodoWrite" && item.tool !== "Todo") return null;
+  const todos = item.arguments?.todos;
+  if (!Array.isArray(todos)) return null;
+  return todos.map((t: any) => ({ content: String(t?.content ?? ""), status: String(t?.status ?? "") }));
+}
+
 /** A progress line for a tool-ish item, or null for messages. */
 function toolLine(item: any): ToolLine | null {
   switch (item?.type) {
@@ -1118,6 +1164,8 @@ function toolLine(item: any): ToolLine | null {
       return { id: item.id, text: `edit ${code(truncate(paths || "?", 120))}`, state: "running" };
     }
     case "dynamicToolCall":
+      // A todo checklist renders as checkboxes, never as a tool line.
+      if (item.tool === "TodoWrite" || item.tool === "Todo") return null;
       return { id: item.id, text: describeTool(item.tool, item.arguments ?? {}), state: "running" };
     case "mcpToolCall":
       return { id: item.id, text: code(`${item.server}/${item.tool}`), state: "running" };

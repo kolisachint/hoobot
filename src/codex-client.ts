@@ -62,6 +62,8 @@ export class CodexClient extends EventEmitter {
   private pending = new Map<RequestId, Pending>();
   private transport: Transport | null = null;
   private closed = false;
+  /** Set by the first `close`, returned by every later one. */
+  private closePromise: Promise<void> | null = null;
 
   private constructor(
     readonly endpoint: string,
@@ -185,11 +187,18 @@ export class CodexClient extends EventEmitter {
     this.transport?.send({ id, result });
   }
 
-  /** Resolves once the server is gone, so a caller can exit without leaving it behind. */
+  /**
+   * Resolves once the server is gone, so a caller can exit without leaving
+   * it behind. Idempotent: a second close reuses the first one's promise
+   * instead of signalling the server's group again. Safe with no transport
+   * (a client whose server never opened).
+   */
   close(): Promise<void> {
-    const stopped = this.transport?.close() ?? Promise.resolve();
-    this.shutdown("closed by client");
-    return stopped;
+    if (!this.closePromise) {
+      this.closePromise = this.transport?.close() ?? Promise.resolve();
+      this.shutdown("closed by client");
+    }
+    return this.closePromise;
   }
 
   get isClosed() {
@@ -449,8 +458,20 @@ function openStdio(
     error(`app-server process error: ${err.message}`);
     onClose(err.message);
   });
+  // A dead server's stdin raises EPIPE. Without a listener that error event
+  // is an uncaught exception, and a synchronously-throwing write would land
+  // on whatever happened to be sending. Both shut the client down instead,
+  // with the reason, so pending calls reject and watchers see `close`.
+  const writeFailed = (err: unknown) => onClose(`app-server write failed: ${err instanceof Error ? err.message : String(err)}`);
+  child.stdin.on("error", writeFailed);
   return {
-    send: (m) => child.stdin.write(JSON.stringify(m) + "\n"),
+    send: (m) => {
+      try {
+        child.stdin.write(JSON.stringify(m) + "\n");
+      } catch (err) {
+        writeFailed(err);
+      }
+    },
     close: () => stopGroup(child),
   };
 }
